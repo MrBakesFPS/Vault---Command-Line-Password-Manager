@@ -1,8 +1,20 @@
+/* =====================================================================
+@Author:		Tyson Koopman-Baker
+@Date:			6/17/2026
+@File:			main.c
+@Version:		1.0
+@IDE:			Vim and Visual Studios
+@Description:	This is the main file used for the Vault program
+				to direct commands to their correct destination
+===================================================================== */
+
 #include <termios.h>
 #include <unistd.h>
 #include "aes.h"
 #include "passHash.h"
 #include "vault.h"
+
+//======================================================================
 
 void printUsage();
 int verifyUsername(char username[SIZE_128]);
@@ -10,6 +22,7 @@ int verifyPassword(char password[SIZE_128], const char* printText);
 void disable_echo();
 void enable_echo();
 
+//======================================================================
 int main(int argc, char*argv[])
 {
 	char username[SIZE_128];
@@ -162,11 +175,23 @@ int main(int argc, char*argv[])
 	return 0;
 }
 
+/*
+* Usage: vault init | add <site> <user> <pass> | get <site> | list | remove <site>
+*/
 void printUsage()
 {
 	printf("Usage: vault init | add <site> <user> <pass> | get <site> | list | remove <site>\n");
 }
 
+/*
+* Verifies that the username is attached to an active vault
+* 
+* @param username - The username being searched for
+* 
+* @return -2 if failed to write to file
+* @return -1 if failed to find path
+* @return 0 on success
+*/
 int verifyUsername(char username[SIZE_128])
 {
 	printf("Username: ");
@@ -183,9 +208,18 @@ int verifyUsername(char username[SIZE_128])
 		fclose(file);
 		return 0;
 	}
-	return -1;
+	return -2;
 }
 
+/*
+* Retrieves a hidden password
+*
+* @param password - The password being entered
+* @param printText - The text being printed for password prompt
+*
+* @return -1 if failed to get password
+* @return 0 on success
+*/
 int verifyPassword(char password[SIZE_128], const char* printText)
 {
 	printf("%s", printText);
@@ -201,6 +235,9 @@ int verifyPassword(char password[SIZE_128], const char* printText)
 	return -1;
 }
 
+/*
+* Disables command line echo
+*/
 void disable_echo()
 {
 	struct termios t;
@@ -211,6 +248,9 @@ void disable_echo()
 	tcsetattr(STDIN_FILENO, TCSANOW, &t);
 }
 
+/*
+* Enables command line echo
+*/
 void enable_echo()
 {
 	struct termios t;

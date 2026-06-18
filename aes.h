@@ -1,10 +1,12 @@
 /* =====================================================================
 @Author:		Tyson Koopman-Baker
 @Date:			6/17/2026
-@File:			passHash.h
+@File:			aes.h
 @Version:		1.0
 @IDE:			Vim and Visual Studios
-@Description:	This is the password hashing header file
+@Description:	This is the file encrypting header file
+				which uses AES and other encryption/dectryption
+				techniques
 ===================================================================== */
 
 #include <stdio.h>

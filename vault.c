@@ -1,7 +1,17 @@
+/* =====================================================================
+@Author:		Tyson Koopman-Baker
+@Date:			6/17/2026
+@File:			vault.c
+@Version:		1.0
+@IDE:			Vim and Visual Studios
+@Description:	This is the vault implementation file
+===================================================================== */
+
 #include "aes.h"
 #include "passHash.h"
 #include "vault.h"
 
+//======================================================================
 int initVault(const char* masterPass, const char* username)
 {
 	uint8_t magic[4] = { 'V', 'L', 'T', '1' };
@@ -38,14 +48,16 @@ int initVault(const char* masterPass, const char* username)
 	if (vaultPath(tempPath, sizeof(tempPath), 1, username) == -1)
 		return -1;
 
-	int wrote = writeVault(magic, version, salt, nonce, tag, buffer, bufLen, tempPath, username);
+	int wrote = writeVault(magic, version, salt, nonce, tag, buffer, bufLen, tempPath);
 	if (wrote == 0)
 	{
 		rename(tempPath, path);
 	}
 	free(buffer);
+	return 0;
 }
 
+//======================================================================
 int removeEntry(const char* site, const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
@@ -110,7 +122,7 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 			if (vaultPath(tempPath, sizeof(tempPath), 1, username) == -1)
 				return -1;
 
-			int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath, username);
+			int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
 			if (wrote == 0)
 			{
 				rename(tempPath, path);
@@ -121,16 +133,17 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 		else
 		{
 			free(vaultItems);
-			return -2;
+			return -3;
 		}
 	}
 	else
 	{
 		free(cipher);
-		return -3;
+		return -2;
 	}
 }
 
+//======================================================================
 int addEntry(const char* site, const char* user, const char* pass, const char* masterPass, const char* username)
 {
 	if (strlen(site) < SIZE_128 && strlen(user) < SIZE_128 && strlen(pass) < SIZE_128)
@@ -139,24 +152,24 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 		size_t userLen = strlen(user);
 		size_t passLen = strlen(pass);
 
-		for (int x = 0; x < siteLen; x++)
+		for (size_t x = 0; x < siteLen; x++)
 		{
 			if (site[x] == '\t' || site[x] == '\n')
 				return -2;
 		}
-		for (int x = 0; x < userLen; x++)
+		for (size_t x = 0; x < userLen; x++)
 		{
 			if (user[x] == '\t' || user[x] == '\n')
 				return -2;
 		}
-		for (int x = 0; x < passLen; x++)
+		for (size_t x = 0; x < passLen; x++)
 		{
 			if (pass[x] == '\t' || pass[x] == '\n')
 				return -2;
 		}
 	}
 	else
-		return -2;
+		return -3;
 
 	uint8_t magic[4];
 	uint8_t version[2];
@@ -212,7 +225,7 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 		if (vaultPath(tempPath, sizeof(tempPath), 1, username) == -1)
 			return -1;
 
-		int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath, username);
+		int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
 		if (wrote == 0)
 		{
 			rename(tempPath, path);
@@ -223,10 +236,11 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 	else
 	{
 		free(cipher);
-		return -3;
+		return -2;
 	}
 }
 
+//======================================================================
 int list(const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
@@ -275,10 +289,11 @@ int list(const char* masterPass, const char* username)
 	else
 	{
 		free(cipher);
-		return -3;
+		return -2;
 	}
 }
 
+//======================================================================
 int get(const char* site, const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
@@ -342,6 +357,7 @@ int get(const char* site, const char* masterPass, const char* username)
 	}
 }
 
+//======================================================================
 size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size_t maxItems)
 {
 	size_t txtIndex = 0;
@@ -388,6 +404,7 @@ size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size
 	return itemIndex;
 }
 
+//======================================================================
 uint8_t* serializeEntries(struct VaultItems* vaultItems, size_t itemCount, size_t* newLen)
 {
 	size_t byteTotal = 0;
@@ -433,12 +450,10 @@ uint8_t* serializeEntries(struct VaultItems* vaultItems, size_t itemCount, size_
 	return buffer;
 }
 
-int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName, const char* username)
+//======================================================================
+int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName)
 {
-	char path[512];
-	if (vaultPath(path, sizeof(path), 0, username) == -1)
-		return -2;
-	FILE* file = fopen(path, "wb");
+	FILE* file = fopen(fileName, "wb");
 	if (file == NULL)
 	{
 		printf("Error opening file...\n");
@@ -457,6 +472,7 @@ int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t n
 	return 0;
 }
 
+//======================================================================
 int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t** cipherOut, size_t* cipLenOut, const char* username)
 {
 	char path[512];
@@ -489,6 +505,7 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 	return 0;
 }
 
+//======================================================================
 int vaultPath(char* dest, size_t size, int temp, const char* username)
 {
 	const char* home = getenv("HOME");
@@ -498,6 +515,7 @@ int vaultPath(char* dest, size_t size, int temp, const char* username)
 	return 0;
 }
 
+//======================================================================
 int randomBytes(uint8_t* buf, size_t len)
 {
 	size_t got = 0;

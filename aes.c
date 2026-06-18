@@ -1,3 +1,13 @@
+/* =====================================================================
+@Author:		Tyson Koopman-Baker
+@Date:			6/17/2026
+@File:			aes.c
+@Version:		1.0
+@IDE:			Vim and Visual Studios
+@Description:	This is the file encrypting implementation file
+				which uses AES and other encryption/dectryption
+				techniques
+===================================================================== */
 #include "aes.h"
 #include "passHash.h"
 

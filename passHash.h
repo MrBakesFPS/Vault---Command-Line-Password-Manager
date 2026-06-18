@@ -4,7 +4,8 @@
 @File:			passHash.h
 @Version:		1.0
 @IDE:			Vim and Visual Studios
-@Description:	This is the password hashing header file
+@Description:	This is the password hashing header file which uses a
+				pbkdf2 and SHA-256
 ===================================================================== */
 
 #include <stdio.h>
