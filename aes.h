@@ -74,10 +74,10 @@ void foldBuf(uint32_t block[4], uint32_t key[4], uint8_t* buf, size_t bufLen);
 /*
 * Folds a 16 byte 0x00 block into a 16 byte key
 *
-* @param key - The base key being used to creeate the block
+* @param schedule - The key schedule being used
 * @param out - The output block from the key
 */
-void e128(const uint32_t key[8], uint32_t out[4]);
+void e128(const uint32_t schedule[60], uint32_t out[4]);
 
 /*
 * Folds a 16 byte block into a 16 byte key
@@ -91,21 +91,21 @@ void gf128(uint32_t keya[4], uint32_t block[4]);
 * Runs a created keystream (nonce and counter pad) through AES using a given key
 * in order to create a new keystream to fold-encrypt into the input buffer
 *
-* @param key - The key used for AES
+* @param schedule - The AES key schedule being used
 * @param nonce - The nonce to use for the keystream
 * @param buf - The buffer being folded into
 * @param len - The length of the buffer
 * @param counterStart - The counter for each fold
 */
-void ctr(const uint32_t key[8], const uint8_t nonce[12], uint8_t* buf, size_t len, uint32_t counterStart);
+void ctr(const uint32_t schedule[60], const uint8_t nonce[12], uint8_t* buf, size_t len, uint32_t counterStart);
 
 /*
 * Encrypts a given 16 byte state with a 32 byte block
 *
-* @param block - The block being decrypted
+* @param schedule - The AES key schedule used to decrypted
 * @param state - The final state
 */
-void runAES(const uint32_t block[8], uint8_t state[16]);
+void runAES(const uint32_t schedule[60], uint8_t state[16]);
 
 /*
 * Encrypts a given 16 byte state with a 32 byte block

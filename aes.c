@@ -13,13 +13,31 @@
 
 //======================================================================
 
+static uint8_t sbox[256];
+static uint8_t invsbox[256];
+static int sboxReady = 0;
+
+static void ensureSbox(void)
+{
+    if (!sboxReady)
+    {
+        initSbox(sbox, invsbox);
+        sboxReady = 1;
+    }
+}
+//======================================================================
+
 void gcmEncrypt(const uint32_t key[8], uint8_t nonce[12], uint8_t* text, size_t txtLen, uint8_t* aad, size_t aadLen, uint8_t tag[16])
 {
+	ensureSbox();
+	uint32_t schedule[60];
+	createScheduleAES(key, schedule, sbox);
+
 	uint32_t foldKey[4];
 	uint8_t foldNonce[16];
 	uint32_t state[4];
 
-	e128(key, foldKey);
+	e128(schedule, foldKey);
 	
 	for (size_t i = 0; i < 12; i++)
 		foldNonce[i] = nonce[i];
@@ -29,9 +47,9 @@ void gcmEncrypt(const uint32_t key[8], uint8_t nonce[12], uint8_t* text, size_t 
 	foldNonce[14] = 0x0;
 	foldNonce[15] = 0x01;
 
-	runAES(key, foldNonce);
+	runAES(schedule, foldNonce);
 	
-	ctr(key, nonce, text, txtLen, 2);
+	ctr(schedule, nonce, text, txtLen, 2);
 
 	ghash(foldKey, aad, aadLen, text, txtLen, state);
 
@@ -49,12 +67,16 @@ void gcmEncrypt(const uint32_t key[8], uint8_t nonce[12], uint8_t* text, size_t 
 
 int gcmDecrypt(const uint32_t key[8], uint8_t nonce[12], uint8_t* text, size_t txtLen, uint8_t* aad, size_t aadLen, uint8_t tag[16])
 {
+	ensureSbox();
+	uint32_t schedule[60];
+	createScheduleAES(key, schedule, sbox);
+
 	uint32_t foldKey[4];
 	uint32_t state[4];
 	uint8_t foldNonce[16];
 	uint8_t compTag[16];
 
-	e128(key, foldKey);
+	e128(schedule, foldKey);
 
 	for (size_t i = 0; i < 12; i++)
 		foldNonce[i] = nonce[i];
@@ -64,7 +86,7 @@ int gcmDecrypt(const uint32_t key[8], uint8_t nonce[12], uint8_t* text, size_t t
 	foldNonce[14] = 0x0;
 	foldNonce[15] = 0x01;
 
-	runAES(key, foldNonce);
+	runAES(schedule, foldNonce);
 
 	ghash(foldKey, aad, aadLen, text, txtLen, state);
 
@@ -84,12 +106,12 @@ int gcmDecrypt(const uint32_t key[8], uint8_t nonce[12], uint8_t* text, size_t t
 
 	if (diff == 0)
 	{
-		ctr(key, nonce, text, txtLen, 2);
+		ctr(schedule, nonce, text, txtLen, 2);
 		return 0;
 	}
 	else
 	{
-		for (int x = 0; x < txtLen; x++)
+		for (size_t x = 0; x < txtLen; x++)
 		{
 			text[x] = 0x00;
 		}
@@ -153,11 +175,11 @@ void foldBuf(uint32_t block[4], uint32_t key[4], uint8_t* buf, size_t bufLen)
 }
 //======================================================================
 
-void e128(const uint32_t key[8], uint32_t out[4])
+void e128(const uint32_t schedule[60], uint32_t out[4])
 {
 	uint8_t temp[16] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
-	runAES(key, temp);
-	for (int i = 0; i < 4; i++)
+	runAES(schedule, temp);
+	for (size_t i = 0; i < 4; i++)
 	{
 		out[i] = ((uint32_t)temp[i * 4] << 24) | ((uint32_t)temp[i * 4 + 1] << 16) | ((uint32_t)temp[i * 4 + 2] << 8) | (uint32_t)temp[i * 4 + 3];
 	}
@@ -175,9 +197,9 @@ void gf128(uint32_t key[4], uint32_t block[4])
 	uint32_t checkBit = 0x80000000;
 	uint32_t pushBit = 0x00000000;
 
-	for (int x = 0; x < 4; x++)
+	for (size_t x = 0; x < 4; x++)
 	{
-		for (int y = 0; y < 32; y++)
+		for (size_t y = 0; y < 32; y++)
 		{
 			if ((shiftB[3] & 0x01) == 0x01)
 				pushBit = 0xe1000000;
@@ -185,10 +207,10 @@ void gf128(uint32_t key[4], uint32_t block[4])
 				pushBit = 0x00000000;
 			if ((key[x] & (checkBit >> y)) == (checkBit >> y))
 			{
-				for (int i = 0; i < 4; i++)
+				for (size_t i = 0; i < 4; i++)
 					accumulator[i] ^= shiftB[i];
 			}
-			for (int i = 3; i >= 0; i--)
+			for (size_t i = 4; i-- > 0; )
 			{
 				if (((shiftB[i] & 0x01) == 0x01) && i < 3)
 					shiftB[i + 1] ^= 0x80000000;
@@ -199,14 +221,14 @@ void gf128(uint32_t key[4], uint32_t block[4])
 			}
 		}
 	}
-	for (int i = 0; i < 4; i++)
+	for (size_t i = 0; i < 4; i++)
 	{
 		block[i] = accumulator[i];
 	}
 }
 //======================================================================
 
-void ctr(const uint32_t key[8], const uint8_t nonce[12], uint8_t* buf, size_t len, uint32_t counterStart)
+void ctr(const uint32_t schedule[60], const uint8_t nonce[12], uint8_t* buf, size_t len, uint32_t counterStart)
 {
 	uint8_t keystream[16];
 	uint32_t counter = counterStart;
@@ -222,7 +244,7 @@ void ctr(const uint32_t key[8], const uint8_t nonce[12], uint8_t* buf, size_t le
 		keystream[14] = (counter >> 8) & 0xff;
 		keystream[15] = counter & 0xff;
 
-		runAES(key, keystream);
+		runAES(schedule, keystream);
 
 		size_t blockSize = (len - offset < 16) ? (len - offset) : 16;
 		for (size_t i = 0; i < blockSize; i++)
@@ -235,21 +257,15 @@ void ctr(const uint32_t key[8], const uint8_t nonce[12], uint8_t* buf, size_t le
 }
 //======================================================================
 
-void runAES(const uint32_t block[8], uint8_t state[16])
+void runAES(const uint32_t schedule[60], uint8_t state[16])
 {
-	uint8_t sbox[256];
-	uint8_t invsbox[256];
-	initSbox(sbox, invsbox);
-
-	uint32_t schedule[60];
 	uint8_t currKey[16];
 
-	createScheduleAES(block, schedule, sbox);
-	for (int x = 0; x < 60; x += 4)
+	for (size_t x = 0; x < 60; x += 4)
 	{
-		for (int y = x; y < x + 4; y++)
+		for (size_t y = x; y < x + 4; y++)
 		{
-			for (int z = 0; z < 4; z++)
+			for (size_t z = 0; z < 4; z++)
 			{
 				currKey[(y - x) * 4 + z] = (schedule[y] >> (8 * (3 - z))) & 0xff;
 			}
@@ -288,11 +304,11 @@ void runDeAES(const uint32_t block[8], uint8_t state[16])
 	createScheduleAES(block, schedule, sbox);
 	for (int x = 56; x >= 0; x -= 4)
 	{
-		for (int y = x; y < x + 4; y++)
+		for (size_t y = (size_t)x; y < (size_t)x + 4; y++)
 		{
-			for (int z = 0; z < 4; z++)
+			for (size_t z = 0; z < 4; z++)
 			{
-				currKey[(y - x) * 4 + z] = (schedule[y] >> (8 * (3 - z))) & 0xff;
+				currKey[(y - (size_t)x) * 4 + z] = (schedule[y] >> (8 * (3 - z))) & 0xff;
 			}
 		}
 		if (x == 56)
@@ -330,7 +346,7 @@ void initSbox(uint8_t sbox[256], uint8_t invSbox[256])
 	} while (p != 1);
 	sbox[0] = 0x63;
 
-	for (int i = 0; i < 256; i++)   // inverse table, free: if S(i)=v then InvS(v)=i
+	for (size_t i = 0; i < 256; i++)   // inverse table, free: if S(i)=v then InvS(v)=i
 		invSbox[sbox[i]] = i;
 }
 //======================================================================
@@ -339,10 +355,10 @@ void createScheduleAES(const uint32_t mainKey[8], uint32_t keySchedule[60], cons
 {
 	uint32_t rcon = 0x01000000;
 
-	for (int t = 0; t < 8; t++)
+	for (size_t t = 0; t < 8; t++)
 		keySchedule[t] = mainKey[t];
 
-	for (int t = 8; t < 60; t++)
+	for (size_t t = 8; t < 60; t++)
 	{
 		if (t % 8 == 0)
 		{
@@ -361,22 +377,22 @@ void createScheduleAES(const uint32_t mainKey[8], uint32_t keySchedule[60], cons
 
 void addRoundKey(uint8_t state[16], const uint8_t roundKey[16])
 {
-	for (int i = 0; i < 16; i++)
+	for (size_t i = 0; i < 16; i++)
 		state[i] ^= roundKey[i];
 }
 //======================================================================
 
 void subBytes(uint8_t state[16], const uint8_t sbox[256])
 {
-	for (int i = 0; i < 16; i++)
-		state[i] = sbox[state[i]];          // each byte indexes the table
+	for (size_t i = 0; i < 16; i++)
+		state[i] = sbox[state[i]];
 }
 //======================================================================
 
 void invSubBytes(uint8_t state[16], const uint8_t invsbox[256])
 {
-	for (int i = 0; i < 16; i++)
-		state[i] = invsbox[state[i]];          // each byte indexes the table
+	for (size_t i = 0; i < 16; i++)
+		state[i] = invsbox[state[i]];
 }
 //======================================================================
 
@@ -440,7 +456,7 @@ void invShiftRows(uint8_t state[16])
 
 void mixColumns(uint8_t state[16])
 {
-	for (int c = 0; c < 4; c++)
+	for (size_t c = 0; c < 4; c++)
 	{
 		uint8_t a0 = state[4 * c], a1 = state[4 * c + 1], a2 = state[4 * c + 2], a3 = state[4 * c + 3];
 		state[4 * c] = xtime(a0) ^ (xtime(a1) ^ a1) ^ a2 ^ a3;
@@ -453,7 +469,7 @@ void mixColumns(uint8_t state[16])
 
 void invMixColumns(uint8_t state[16])
 {
-	for (int c = 0; c < 4; c++)
+	for (size_t c = 0; c < 4; c++)
 	{
 		uint8_t a0 = state[4 * c], a1 = state[4 * c + 1], a2 = state[4 * c + 2], a3 = state[4 * c + 3];
 		state[4 * c] = mul14(a0) ^ mul11(a1) ^ mul13(a2) ^ mul9(a3);
@@ -511,11 +527,11 @@ uint32_t pushSbox(const uint32_t wordIn, const uint8_t sbox[256])
 {
 	uint32_t wordOut = 0;
 	uint8_t splitWord[4];
-	for (int x = 3; x >= 0; x--)
+	for (size_t x = 0; x < 4; x++)
 	{
 		splitWord[x] = wordIn >> ((3 - x) * 8) & 0xff;
 	}
-	for (int x = 0; x < 4; x++)
+	for (size_t x = 0; x < 4; x++)
 	{
 		splitWord[x] = sbox[splitWord[x]];
 		wordOut ^= splitWord[x];

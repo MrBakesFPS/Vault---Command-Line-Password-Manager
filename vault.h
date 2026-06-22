@@ -18,6 +18,19 @@ struct VaultItems
 };
 
 /*
+ * Removes a current vault based on the username and passwords provided
+ *
+ * @param masterPass - The password used for decryption confirmation
+ * @param username - The username for finding the vault
+ *
+ * @return -3 if the vault couldn't be removed
+ * @return -2 if the vault couldn't be found
+ * @return -1 if the vault failed to decrypt
+ * @return 0 on success
+*/
+int closeVault(const char* masterPass, const char* username);
+
+/*
 * Initializes a new vault with a Usernamd and Master Password
 *
 * @return -1 if the vault path couldn't be found

@@ -31,7 +31,7 @@ uint8_t* pbkdf2(uint8_t* password, size_t passLen, uint8_t* salt, size_t saltLen
     for (size_t i = 0; i < SIZE_32; i++)
 		finalHash[i] = hash[i];
 
-    for (int j = 1; j < iterations; j++)
+    for (size_t j = 1; j < iterations; j++)
     {
         uint8_t* next = hmac(password, passLen, hash, SIZE_32);
         free(hash);
@@ -182,6 +182,11 @@ uint8_t* padMessage(uint8_t* input, size_t* numBlocks, size_t msgLength)
 	{
 		length += 1;
 		uint8_t* temp = realloc(myChar, length);
+		if (temp == NULL)
+		{
+			free(myChar);
+			return NULL;
+		}
 		myChar = temp;
 		myChar[length - 1] = 0x00;
 	}
@@ -189,6 +194,11 @@ uint8_t* padMessage(uint8_t* input, size_t* numBlocks, size_t msgLength)
 	length += 8;
 	*numBlocks = length / 64;
 	uint8_t* temp2 = realloc(myChar, length);
+	if (temp2 == NULL)
+	{
+		free(myChar);
+		return NULL;
+	}
 	myChar = temp2;
 
 	unsigned long bitLen = (unsigned long)msgLength * 8;

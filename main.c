@@ -36,7 +36,7 @@ int main(int argc, char*argv[])
 	{
 		if (strcmp(argv[1], "list") == 0)
 		{
-			if (verifyUsername(username) == -1)
+			if (verifyUsername(username) != 0)
 			{
 				printf("User vault doesnt't exist!\n");
 				return -1;
@@ -49,12 +49,12 @@ int main(int argc, char*argv[])
 			if (rc == -3)
 			{
 				printf("Wrong master password or corrupted vault.\n");
-				return 1;
+				return -1;
 			}
 			if (rc == -1)
 			{
 				printf("No vault found — run 'init' first.\n");
-				return 1;
+				return -1;
 			}
 		}
 		else if (strcmp(argv[1], "init") == 0)
@@ -82,7 +82,54 @@ int main(int argc, char*argv[])
 			if (rc == -1)
 			{
 				printf("ERROR -- Unable to create vault\n");
-				return 1;
+				return -1;
+			}
+			else
+			{
+				printf("Vault created successfully!\n");
+			}
+		}
+		else if (strcmp(argv[1], "close") == 0)
+		{
+			if (verifyUsername(username) != 0)
+			{
+				printf("User doesn't exist\n");
+				return -1;
+			}
+			if (verifyPassword(password, "Password: ") == -1)
+			{
+				return -1;
+			}
+			if (verifyPassword(confirmPass, "Confirm Password: ") == -1)
+			{
+				return -1;
+			}
+			if (strcmp(password, confirmPass) != 0)
+			{
+				printf("Passwords don't match. Vault close failed!\n");
+				return -1;
+			}
+
+			int rc = closeVault(password, username);
+
+			if (rc == -1)
+			{
+				printf("Vault corrupted");
+				return -1;
+			}
+			else if (rc == -2)
+			{
+				printf("Vault doesn't (or no longer) exists...\n");
+				return -1;
+			}
+			else if (rc == -3)
+			{
+				printf("Failed to remove vault.\n");
+				return -1;
+			}
+			else
+			{
+				printf("Vault removed successfully!\n");
 			}
 		}
 		else
@@ -94,7 +141,7 @@ int main(int argc, char*argv[])
 	{
 		if (strcmp(argv[1], "get") == 0)
 		{
-			if (verifyUsername(username) == -1)
+			if (verifyUsername(username) != 0)
 			{
 				printf("User vault doesnt't exist!\n");
 				return -1;
@@ -107,17 +154,17 @@ int main(int argc, char*argv[])
 			if (rc == -3)
 			{
 				printf("Wrong master password or corrupted vault.\n");
-				return 1;
+				return -1;
 			}
 			if (rc == -1)
 			{
 				printf("No vault found — run 'init' first.\n");
-				return 1;
+				return -1;
 			}
 		}
 		else if (strcmp(argv[1], "remove") == 0)
 		{
-			if (verifyUsername(username) == -1)
+			if (verifyUsername(username) != 0)
 			{
 				printf("User vault doesnt't exist!\n");
 				return -1;
@@ -129,15 +176,21 @@ int main(int argc, char*argv[])
 			int rc = removeEntry(argv[2], password, username);
 			if (rc == -3)
 			{
-				printf("Wrong master password or corrupted vault.\n");
-				return 1;
+				printf("Item not found...\n");
+				return -1;
 			}
-			if (rc == -1)
+			else if (rc == -2)
+			{
+				printf("Wrong master password or corrupted vault.\n");
+				return -1;
+			}
+			else if (rc == -1)
 			{
 				printf("No vault found — run 'init' first.\n");
-				return 1;
+				return -1;
 			}
-			printf("Password removed from vault successfully!\n");
+			else
+				printf("Password removed from vault successfully!\n");
 		}
 		else
 		{
@@ -146,7 +199,7 @@ int main(int argc, char*argv[])
 	}
 	else if (argc == 5)
 	{
-		if (verifyUsername(username) == -1)
+		if (verifyUsername(username) != 0)
 		{
 			printf("User vault doesnt't exist!\n");
 			return -1;
@@ -156,17 +209,28 @@ int main(int argc, char*argv[])
 			return -1;
 		}
 		int rc = addEntry(argv[2], argv[3], argv[4], password, username);
-		if (rc == -3)
+		if (rc == -4)
+		{
+			printf("Vault full!\n");
+			return -1;
+		}
+		else if (rc == -3)
 		{
 			printf("Wrong master password or corrupted vault.\n");
-			return 1;
+			return -1;
 		}
-		if (rc == -1)
+		else if (rc == -2)
+		{
+			printf("Unknown error or wrong master password.\n");
+			return -1;
+		}
+		else if (rc == -1)
 		{
 			printf("No vault found — run 'init' first.\n");
-			return 1;
+			return -1;
 		}
-		printf("Password added to vault successfully!\n");
+		else
+			printf("Password added to vault successfully!\n");
 	}
 	else
 	{
@@ -180,7 +244,7 @@ int main(int argc, char*argv[])
 */
 void printUsage()
 {
-	printf("Usage: vault init | add <site> <user> <pass> | get <site> | list | remove <site>\n");
+	printf("Usage: vault init | close | add <site> <user> <pass> | get <site> | list | remove <site>\n");
 }
 
 /*

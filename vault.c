@@ -12,6 +12,57 @@
 #include "vault.h"
 
 //======================================================================
+int closeVault(const char* masterPass, const char* username)
+{
+	uint8_t magic[4];
+	uint8_t version[2];
+	uint8_t salt[16];
+	uint8_t nonce[12];
+	uint8_t tag[16];
+	uint8_t* cipher;
+	size_t cipLen;
+
+	// use gcm to decrypt and tell if the password worked
+
+	if (readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username) != 0)
+	{
+		return -2;
+	}
+
+	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	uint32_t key[8];
+	for (size_t x = 0; x < 8; x++)
+	{
+		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
+	}
+	free(derKey);
+
+	uint8_t aad[6];
+
+	for (size_t x = 0; x < 4; x++)
+		aad[x] = magic[x];
+	for (size_t x = 0; x < 2; x++)
+		aad[x + 4] = version[x];
+
+	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) == 0)
+	{
+		free(cipher);
+		char path[512];
+		if (vaultPath(path, sizeof(path), 0, username) == 0)
+		{
+			if (remove(path) == 0)
+				return 0;
+			else
+				return -3;
+		}
+		else
+			return -2;
+	}
+	else
+		return -1;
+}
+
+//======================================================================
 int initVault(const char* masterPass, const char* username)
 {
 	uint8_t magic[4] = { 'V', 'L', 'T', '1' };
@@ -29,7 +80,7 @@ int initVault(const char* masterPass, const char* username)
 	randomBytes(salt, 16);
 	randomBytes(nonce, 12);
 
-	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600);
+	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -73,7 +124,7 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 		return -1;
 	}
 
-	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600);
+	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -184,7 +235,7 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 		return -1;
 	}
 
-	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600);
+	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -256,7 +307,7 @@ int list(const char* masterPass, const char* username)
 		return -1;
 	}
 
-	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600);
+	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -309,7 +360,7 @@ int get(const char* site, const char* masterPass, const char* username)
 		return -1;
 	}
 
-	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600);
+	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -373,7 +424,7 @@ size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size
 			wordIndex++;
 			txtIndex++;
 		}
-		vaultItems[itemIndex].site[wordIndex] = '\0';
+		vaultItems[itemIndex].site[wordIndex < 127 ? wordIndex : 127] = '\0';
 		wordIndex = 0;
 		txtIndex++;
 
@@ -384,7 +435,7 @@ size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size
 			wordIndex++;
 			txtIndex++;
 		}
-		vaultItems[itemIndex].user[wordIndex] = '\0';
+		vaultItems[itemIndex].user[wordIndex < 127 ? wordIndex : 127] = '\0';
 		wordIndex = 0;
 		txtIndex++;
 
@@ -395,7 +446,7 @@ size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size
 			wordIndex++;
 			txtIndex++;
 		}
-		vaultItems[itemIndex].pass[wordIndex] = '\0';
+		vaultItems[itemIndex].pass[wordIndex < 127 ? wordIndex : 127] = '\0';
 		wordIndex = 0;
 		txtIndex++;
 		itemIndex++;
@@ -489,15 +540,33 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 		fseek(file, 0, SEEK_END);
 		long total = ftell(file);
 		fseek(file, 0, SEEK_SET);
+
+		if (total < 50)
+		{
+			fclose(file);
+			return -1;
+		}
+
 		size_t cipLen = (size_t)total - 50;
 
-		fread(magic, sizeof(uint8_t), 4, file);
-		fread(version, sizeof(uint8_t), 2, file);
-		fread(salt, sizeof(uint8_t), 16, file);
-		fread(nonce, sizeof(uint8_t), 12, file);
-		fread(tag, sizeof(uint8_t), 16, file);
-		uint8_t* cipher = malloc(sizeof(uint8_t) * cipLen);
-		fread(cipher, sizeof(uint8_t), cipLen, file);
+		if (fread(magic, sizeof(uint8_t), 4, file) != 4 || fread(version, sizeof(uint8_t), 2, file) != 2 || fread(salt, sizeof(uint8_t), 16, file) != 16 || fread(nonce, sizeof(uint8_t), 12, file) != 12 || fread(tag, sizeof(uint8_t), 16, file) != 16)
+		{
+			fclose(file);
+			return -1;
+		}
+
+		uint8_t* cipher = malloc(sizeof(uint8_t) * (cipLen ? cipLen : 1));
+		if (cipher == NULL)
+		{
+			fclose(file);
+			return -1;
+		}
+		if (fread(cipher, sizeof(uint8_t), cipLen, file) != cipLen)
+		{
+			free(cipher);
+			fclose(file);
+			return -1;
+		}
 		*cipherOut = cipher;
 		*cipLenOut = cipLen;
 	}
