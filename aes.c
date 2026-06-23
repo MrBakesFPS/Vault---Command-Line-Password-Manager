@@ -259,6 +259,7 @@ void ctr(const uint32_t schedule[60], const uint8_t nonce[12], uint8_t* buf, siz
 
 void runAES(const uint32_t schedule[60], uint8_t state[16])
 {
+	ensureSbox();
 	uint8_t currKey[16];
 
 	for (size_t x = 0; x < 60; x += 4)

@@ -21,6 +21,7 @@ int verifyUsername(char username[SIZE_128]);
 int verifyPassword(char password[SIZE_128], const char* printText);
 void disable_echo();
 void enable_echo();
+static void reportError(int rc);
 
 //======================================================================
 int main(int argc, char*argv[])
@@ -46,14 +47,9 @@ int main(int argc, char*argv[])
 				return -1;
 			}
 			int rc = list(password, username);
-			if (rc == -3)
+			if (rc != VAULT_OK)
 			{
-				printf("Wrong master password or corrupted vault.\n");
-				return -1;
-			}
-			if (rc == -1)
-			{
-				printf("No vault found — run 'init' first.\n");
+				reportError(rc);
 				return -1;
 			}
 		}
@@ -79,15 +75,12 @@ int main(int argc, char*argv[])
 			}
 
 			int rc = initVault(password, username);
-			if (rc == -1)
+			if (rc != VAULT_OK)
 			{
-				printf("ERROR -- Unable to create vault\n");
+				reportError(rc);
 				return -1;
 			}
-			else
-			{
-				printf("Vault created successfully!\n");
-			}
+			printf("Vault created successfully!\n");
 		}
 		else if (strcmp(argv[1], "close") == 0)
 		{
@@ -111,26 +104,12 @@ int main(int argc, char*argv[])
 			}
 
 			int rc = closeVault(password, username);
-
-			if (rc == -1)
+			if (rc != VAULT_OK)
 			{
-				printf("Vault corrupted");
+				reportError(rc);
 				return -1;
 			}
-			else if (rc == -2)
-			{
-				printf("Vault doesn't (or no longer) exists...\n");
-				return -1;
-			}
-			else if (rc == -3)
-			{
-				printf("Failed to remove vault.\n");
-				return -1;
-			}
-			else
-			{
-				printf("Vault removed successfully!\n");
-			}
+			printf("Vault removed successfully!\n");
 		}
 		else
 		{
@@ -151,14 +130,9 @@ int main(int argc, char*argv[])
 				return -1;
 			}
 			int rc = get(argv[2], password, username);
-			if (rc == -3)
+			if (rc != VAULT_OK)
 			{
-				printf("Wrong master password or corrupted vault.\n");
-				return -1;
-			}
-			if (rc == -1)
-			{
-				printf("No vault found — run 'init' first.\n");
+				reportError(rc);
 				return -1;
 			}
 		}
@@ -174,23 +148,12 @@ int main(int argc, char*argv[])
 				return -1;
 			}
 			int rc = removeEntry(argv[2], password, username);
-			if (rc == -3)
+			if (rc != VAULT_OK)
 			{
-				printf("Item not found...\n");
+				reportError(rc);
 				return -1;
 			}
-			else if (rc == -2)
-			{
-				printf("Wrong master password or corrupted vault.\n");
-				return -1;
-			}
-			else if (rc == -1)
-			{
-				printf("No vault found — run 'init' first.\n");
-				return -1;
-			}
-			else
-				printf("Password removed from vault successfully!\n");
+			printf("Password removed from vault successfully!\n");
 		}
 		else
 		{
@@ -209,28 +172,12 @@ int main(int argc, char*argv[])
 			return -1;
 		}
 		int rc = addEntry(argv[2], argv[3], argv[4], password, username);
-		if (rc == -4)
+		if (rc != VAULT_OK)
 		{
-			printf("Vault full!\n");
+			reportError(rc);
 			return -1;
 		}
-		else if (rc == -3)
-		{
-			printf("Wrong master password or corrupted vault.\n");
-			return -1;
-		}
-		else if (rc == -2)
-		{
-			printf("Unknown error or wrong master password.\n");
-			return -1;
-		}
-		else if (rc == -1)
-		{
-			printf("No vault found — run 'init' first.\n");
-			return -1;
-		}
-		else
-			printf("Password added to vault successfully!\n");
+		printf("Password added to vault successfully!\n");
 	}
 	else
 	{
@@ -244,7 +191,7 @@ int main(int argc, char*argv[])
 */
 void printUsage()
 {
-	printf("Usage: vault init | close | add <site> <user> <pass> | get <site> | list | remove <site>\n");
+	printf("Usage: vault init | close | list | get <site> | remove <site> | add <site> <user> <pass>\n");
 }
 
 /*
@@ -322,4 +269,23 @@ void enable_echo()
 
 	t.c_lflag |= ECHO;
 	tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
+/*
+* Reports which error caused a problem
+* 
+* @param rc - The error check number
+*/
+static void reportError(int rc)
+{
+	switch (rc) {
+	case VAULT_ERR_NOT_FOUND:  printf("No vault found — run 'init' first.\n"); break;
+	case VAULT_ERR_AUTH:       printf("Wrong master password or corrupted vault.\n"); break;
+	case VAULT_ERR_ITEM:       printf("Item not found.\n"); break;
+	case VAULT_ERR_FULL:       printf("Vault is full.\n"); break;
+	case VAULT_ERR_FIELD_LEN:  printf("Field too long (max 127 bytes).\n"); break;
+	case VAULT_ERR_FIELD_CHAR: printf("Fields can't contain tabs or newlines.\n"); break;
+	case VAULT_ERR_IO:         printf("Storage error accessing the vault file.\n"); break;
+	default:                   printf("Unexpected internal error.\n"); break;
+	}
 }

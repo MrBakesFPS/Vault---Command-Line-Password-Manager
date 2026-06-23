@@ -24,12 +24,15 @@ int closeVault(const char* masterPass, const char* username)
 
 	// use gcm to decrypt and tell if the password worked
 
-	if (readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username) != 0)
-	{
-		return -2;
-	}
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
 
 	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		return VAULT_ERR_INTERNAL;
+	}
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -46,20 +49,22 @@ int closeVault(const char* masterPass, const char* username)
 
 	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) == 0)
 	{
+		if (cipher == NULL)
+			return VAULT_ERR_INTERNAL;
 		free(cipher);
 		char path[512];
 		if (vaultPath(path, sizeof(path), 0, username) == 0)
 		{
 			if (remove(path) == 0)
-				return 0;
+				return VAULT_OK;
 			else
-				return -3;
+				return VAULT_ERR_IO;
 		}
 		else
-			return -2;
+			return VAULT_ERR_IO;
 	}
 	else
-		return -1;
+		return VAULT_ERR_AUTH;
 }
 
 //======================================================================
@@ -81,6 +86,10 @@ int initVault(const char* masterPass, const char* username)
 	randomBytes(nonce, 12);
 
 	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		return VAULT_ERR_INTERNAL;
+	}
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -92,20 +101,24 @@ int initVault(const char* masterPass, const char* username)
 	size_t bufLen = 0;
 	gcmEncrypt(key, nonce, buffer, bufLen, aad, 6, tag);
 
+	if (buffer == NULL)
+		return VAULT_ERR_INTERNAL;
+
 	char path[512];
 	char tempPath[512];
 	if (vaultPath(path, sizeof(path), 0, username) == -1)
-		return -1;
+		return VAULT_ERR_NOT_FOUND;
 	if (vaultPath(tempPath, sizeof(tempPath), 1, username) == -1)
-		return -1;
+		return VAULT_ERR_NOT_FOUND;
 
 	int wrote = writeVault(magic, version, salt, nonce, tag, buffer, bufLen, tempPath);
 	if (wrote == 0)
 	{
-		rename(tempPath, path);
+		if (rename(tempPath, path) != 0)
+			return VAULT_ERR_IO;
 	}
 	free(buffer);
-	return 0;
+	return VAULT_OK;
 }
 
 //======================================================================
@@ -119,12 +132,15 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 	uint8_t* cipher;
 	size_t cipLen;
 
-	if (readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username) != 0)
-	{
-		return -1;
-	}
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
 
 	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		return VAULT_ERR_INTERNAL;
+	}
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -141,7 +157,14 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 
 	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) == 0)
 	{
+		if (cipher == NULL)
+			return VAULT_ERR_INTERNAL;
 		struct VaultItems* vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+		if (vaultItems == NULL)
+		{
+			free(cipher);
+			return VAULT_ERR_INTERNAL;
+		}
 		size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
 		free(cipher);
 		size_t found = 0;
@@ -163,34 +186,40 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 			size_t newLen = 0;
 			uint8_t* blob = serializeEntries(vaultItems, vaultSize, &newLen);
 			free(vaultItems);
+			if (blob == NULL)
+			{
+				free(cipher);
+				return VAULT_ERR_INTERNAL;
+			}
 			randomBytes(nonce, 12);
 			gcmEncrypt(key, nonce, blob, newLen, aad, 6, tag);
 
 			char path[512];
 			char tempPath[512];
 			if (vaultPath(path, sizeof(path), 0, username) == -1)
-				return -1;
+				return VAULT_ERR_IO;
 			if (vaultPath(tempPath, sizeof(tempPath), 1, username) == -1)
-				return -1;
+				return VAULT_ERR_IO;
 
 			int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
 			if (wrote == 0)
 			{
-				rename(tempPath, path);
+				if (rename(tempPath, path) != 0)
+					return VAULT_ERR_IO;
 			}
 			free(blob);
-			return wrote;
+			return (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
 		}
 		else
 		{
 			free(vaultItems);
-			return -3;
+			return VAULT_ERR_ITEM;
 		}
 	}
 	else
 	{
 		free(cipher);
-		return -2;
+		return VAULT_ERR_AUTH;
 	}
 }
 
@@ -206,21 +235,21 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 		for (size_t x = 0; x < siteLen; x++)
 		{
 			if (site[x] == '\t' || site[x] == '\n')
-				return -2;
+				return VAULT_ERR_FIELD_CHAR;
 		}
 		for (size_t x = 0; x < userLen; x++)
 		{
 			if (user[x] == '\t' || user[x] == '\n')
-				return -2;
+				return VAULT_ERR_FIELD_CHAR;
 		}
 		for (size_t x = 0; x < passLen; x++)
 		{
 			if (pass[x] == '\t' || pass[x] == '\n')
-				return -2;
+				return VAULT_ERR_FIELD_CHAR;
 		}
 	}
 	else
-		return -3;
+		return VAULT_ERR_FIELD_LEN;
 
 	uint8_t magic[4];
 	uint8_t version[2];
@@ -230,12 +259,15 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 	uint8_t* cipher;
 	size_t cipLen;
 
-	if (readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username) != 0)
-	{
-		return -1;
-	}
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
 
 	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		return VAULT_ERR_INTERNAL;
+	}
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -252,12 +284,20 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 
 	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) == 0)
 	{
+		if (cipher == NULL)
+			return VAULT_ERR_INTERNAL;
 		struct VaultItems* vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+		if (vaultItems == NULL)
+		{
+			free(cipher);
+			return VAULT_ERR_INTERNAL;
+		}
 		size_t vaultSize = parse(cipher, cipLen, vaultItems, 256);
 		free(cipher);
 		if (vaultSize >= SIZE_256)
 		{
-			free(vaultItems); return -4;
+			free(vaultItems);
+			return VAULT_ERR_FULL;
 		}
 		strcpy(vaultItems[vaultSize].site, site);
 		strcpy(vaultItems[vaultSize].user, user);
@@ -266,28 +306,34 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 		size_t newLen = 0;
 		uint8_t* blob = serializeEntries(vaultItems, vaultSize, &newLen);
 		free(vaultItems);
+		if (blob == NULL)
+		{
+			free(cipher);
+			return VAULT_ERR_INTERNAL;
+		}
 		randomBytes(nonce, 12);
 		gcmEncrypt(key, nonce, blob, newLen, aad, 6, tag);
 
 		char path[512];
 		char tempPath[512];
 		if (vaultPath(path, sizeof(path), 0, username) == -1)
-			return -1;
+			return VAULT_ERR_IO;
 		if (vaultPath(tempPath, sizeof(tempPath), 1, username) == -1)
-			return -1;
+			return VAULT_ERR_IO;
 
 		int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
 		if (wrote == 0)
 		{
-			rename(tempPath, path);
+			if (rename(tempPath, path) != 0)
+				return VAULT_ERR_IO;
 		}
 		free(blob);
-		return wrote;
+		return (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
 	}
 	else
 	{
 		free(cipher);
-		return -2;
+		return VAULT_ERR_AUTH;
 	}
 }
 
@@ -302,12 +348,15 @@ int list(const char* masterPass, const char* username)
 	uint8_t* cipher;
 	size_t cipLen;
 
-	if (readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username) != 0)
-	{
-		return -1;
-	}
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
 
 	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		return VAULT_ERR_INTERNAL;
+	}
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -324,7 +373,15 @@ int list(const char* masterPass, const char* username)
 
 	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) == 0)
 	{
+		if (cipher == NULL)
+			return VAULT_ERR_INTERNAL;
+
 		struct VaultItems* vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+		if (vaultItems == NULL)
+		{
+			free(cipher);
+			return VAULT_ERR_INTERNAL;
+		}
 		size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
 		free(cipher);
 		printf("\n%-15s\t%-15s\t%-15s\n", "Site", "User", "Password");
@@ -335,12 +392,12 @@ int list(const char* masterPass, const char* username)
 		}
 		printf("\n");
 		free(vaultItems);
-		return 0;
+		return VAULT_OK;
 	}
 	else
 	{
 		free(cipher);
-		return -2;
+		return VAULT_ERR_AUTH;
 	}
 }
 
@@ -355,12 +412,15 @@ int get(const char* site, const char* masterPass, const char* username)
 	uint8_t* cipher;
 	size_t cipLen;
 
-	if (readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username) != 0)
-	{
-		return -1;
-	}
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
 
 	uint8_t* derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		return VAULT_ERR_INTERNAL;
+	}
 	uint32_t key[8];
 	for (size_t x = 0; x < 8; x++)
 	{
@@ -377,34 +437,42 @@ int get(const char* site, const char* masterPass, const char* username)
 
 	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) == 0)
 	{
+		if (cipher == NULL)
+			return VAULT_ERR_INTERNAL;
 		int found = 0;
 		struct VaultItems* vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+		if (vaultItems == NULL)
+		{
+			free(cipher);
+			return VAULT_ERR_INTERNAL;
+		}
 		size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
 		free(cipher);
+			
+		printf("\n%-15s\t%-15s\t%-15s\n", "Site", "User", "Password");
+		printf("%-15s\t%-15s\t%-15s\n", "----", "----", "--------");
 
 		for (size_t x = 0; x < vaultSize; x++)
 		{
 			if (strcmp(vaultItems[x].site, site) == 0)
 			{
-				printf("\n%-15s\t%-15s\t%-15s\n", "Site", "User", "Password");
-				printf("%-15s\t%-15s\t%-15s\n", "----", "----", "--------");
-				printf("%-15s\t%-15s\t%-15s\n\n", vaultItems[x].site, vaultItems[x].user, vaultItems[x].pass);
+				printf("%-15s\t%-15s\t%-15s\n", vaultItems[x].site, vaultItems[x].user, vaultItems[x].pass);
 				found = 1;
 			}
 		}
+		printf("\n");
 		if (found == 0)
 		{
-			printf("%s not found...\n", site);
 			free(vaultItems);
-			return -2;
+			return VAULT_ERR_ITEM;
 		}
 		free(vaultItems);
-		return 0;
+		return VAULT_OK;
 	}
 	else
 	{
 		free(cipher);
-		return -3;
+		return VAULT_ERR_AUTH;
 	}
 }
 
@@ -508,7 +576,7 @@ int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t n
 	if (file == NULL)
 	{
 		printf("Error opening file...\n");
-		return -1;
+		return VAULT_ERR_IO;
 	}
 	else
 	{
@@ -520,7 +588,7 @@ int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t n
 		fwrite(cipher, sizeof(uint8_t), cipLen, file);
 	}
 	fclose(file);
-	return 0;
+	return VAULT_OK;
 }
 
 //======================================================================
@@ -528,12 +596,12 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 {
 	char path[512];
 	if (vaultPath(path, sizeof(path), 0, username) == -1)
-		return -2;
+		return VAULT_ERR_IO;
 	FILE* file = fopen(path, "rb");
 	if (file == NULL)
 	{
 		printf("Error opening file...\n");
-		return -1;
+		return VAULT_ERR_NOT_FOUND;
 	}
 	else
 	{
@@ -544,7 +612,7 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 		if (total < 50)
 		{
 			fclose(file);
-			return -1;
+			return VAULT_ERR_IO;
 		}
 
 		size_t cipLen = (size_t)total - 50;
@@ -552,26 +620,26 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 		if (fread(magic, sizeof(uint8_t), 4, file) != 4 || fread(version, sizeof(uint8_t), 2, file) != 2 || fread(salt, sizeof(uint8_t), 16, file) != 16 || fread(nonce, sizeof(uint8_t), 12, file) != 12 || fread(tag, sizeof(uint8_t), 16, file) != 16)
 		{
 			fclose(file);
-			return -1;
+			return VAULT_ERR_IO;
 		}
 
 		uint8_t* cipher = malloc(sizeof(uint8_t) * (cipLen ? cipLen : 1));
 		if (cipher == NULL)
 		{
 			fclose(file);
-			return -1;
+			return VAULT_ERR_IO;
 		}
 		if (fread(cipher, sizeof(uint8_t), cipLen, file) != cipLen)
 		{
 			free(cipher);
 			fclose(file);
-			return -1;
+			return VAULT_ERR_IO;
 		}
 		*cipherOut = cipher;
 		*cipLenOut = cipLen;
 	}
 	fclose(file);
-	return 0;
+	return VAULT_OK;
 }
 
 //======================================================================
@@ -579,9 +647,9 @@ int vaultPath(char* dest, size_t size, int temp, const char* username)
 {
 	const char* home = getenv("HOME");
 	if (home == NULL)
-		return -1;
+		return VAULT_ERR_IO;
 	snprintf(dest, size, "%s/.config/vault/vault.%s.bin%s", home, username, temp ? ".temp" : "");
-	return 0;
+	return VAULT_OK;
 }
 
 //======================================================================
@@ -595,9 +663,9 @@ int randomBytes(uint8_t* buf, size_t len)
 		{
 			if (errno == EINTR)
 				continue;
-			return -1;
+			return VAULT_ERR_IO;
 		}
 		got += (size_t)r;
 	}
-	return 0;
+	return VAULT_OK;
 }

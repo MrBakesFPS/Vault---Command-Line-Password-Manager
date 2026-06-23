@@ -7,6 +7,22 @@
 @Description:	This is the vault implementation file
 ===================================================================== */
 
+#ifndef VAULT_H
+#define VAULT_H
+
+// Enumerator for the type of vault errors
+typedef enum {
+    VAULT_OK = 0,
+    VAULT_ERR_NOT_FOUND = -1,
+    VAULT_ERR_AUTH = -2,
+    VAULT_ERR_ITEM = -3,
+    VAULT_ERR_FULL = -4,
+    VAULT_ERR_FIELD_LEN = -5,
+    VAULT_ERR_FIELD_CHAR = -6,
+    VAULT_ERR_IO = -7,
+    VAULT_ERR_INTERNAL = -8,
+} VaultStatus;
+
 /*
 * A structure of vault data containing site, user and password data
 */
@@ -177,3 +193,4 @@ int vaultPath(char* dest, size_t size, int temp, const char* username);
 */
 int randomBytes(uint8_t* buf, size_t len);
 
+#endif

@@ -8,6 +8,8 @@
 				which uses AES and other encryption/dectryption
 				techniques
 ===================================================================== */
+#ifndef AES_H
+#define AES_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -268,3 +270,4 @@ uint32_t rotL(uint32_t x);
 
 //======================================================================
 
+#endif
