@@ -191,7 +191,7 @@ int main(int argc, char*argv[])
 */
 void printUsage()
 {
-	printf("Usage: vault init | close | list | get <site> | remove <site> | add <site> <user> <pass>\n");
+	printf("Usage: vault init | close | add <site> <user> <pass> | get <site> | list | remove <site>\n");
 }
 
 /*
@@ -211,7 +211,7 @@ int verifyUsername(char username[SIZE_128])
 		username[strcspn(username, "\n")] = '\0';
 	}
 	char path[512];
-	if (vaultPath(path, sizeof(path), 0, username) == -1)
+	if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK)
 		return -1;
 	FILE* file = fopen(path, "r");
 	if (file != NULL)
