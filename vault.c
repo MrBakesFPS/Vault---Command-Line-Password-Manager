@@ -775,6 +775,15 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 //======================================================================
 int vaultPath(char* dest, size_t size, int temp, const char* username)
 {
+	size_t len = strlen(username);
+	if (len == 0)
+		return VAULT_ERR_IO;
+	for (size_t x = 0; x < len; x++)
+	{
+		char c = username[x];
+		if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '_'))
+			return VAULT_ERR_IO;
+	}
 	const char* home = getenv("HOME");
 	if (home == NULL)
 		return VAULT_ERR_IO;
