@@ -6,7 +6,7 @@
    @IDE:			Vim and Visual Studios
    @Description:	This is the main file used for the Vault program
    					to direct commands to their correct destination
-   ===================================================================== */
+===================================================================== */
 
 #include <termios.h>
 #include <unistd.h>
@@ -50,7 +50,7 @@ int main(int argc, char*argv[])
 				status = -1;
 				goto cleanup;
 			}
-			int rc = list(password, username);
+			int rc = confirmPassword(password, username);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -156,13 +156,18 @@ void printUsage()
 	printf("Usage: vault init | login | close\n");
 }
 
+/*
+* Logs into the vault CLI via username and password
+* 
+* @param username - The username for the user vault
+*/
 void loginVault(char username[SIZE_128])
 {
 	char userInput[SIZE_128] = "";
 	char password[SIZE_128];
 	while (strcmp(userInput, "exit") != 0)
 	{
-		printf("> ");
+		printf("%s@vault> ", username);
 		if (fgets(userInput, SIZE_128, stdin) == NULL)
 			break;
 		userInput[strcspn(userInput, "\n")] = '\0';
@@ -215,6 +220,7 @@ void loginVault(char username[SIZE_128])
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
+				printf("\n");
 				continue;
 			}
 			printf("Password added to vault successfully!\n\n");
@@ -222,18 +228,24 @@ void loginVault(char username[SIZE_128])
 		else if (strcmp(userInput, "remove") == 0)
 		{
 			char site[SIZE_128];
+			char user[SIZE_128];
+
 			printf("Site: ");
 			if (fgets(site, SIZE_128, stdin) != NULL)
 			{
 				site[strcspn(site, "\n")] = '\0';
 			}
-
+			printf("User: ");
+			if (fgets(user, SIZE_128, stdin) != NULL)
+			{
+				user[strcspn(user, "\n")] = '\0';
+			}
 			if (verifyPassword(password, "Master Password: ") == -1)
 			{
 				printf("Wrong password!\n\n");
 				continue;
 			}
-			int rc = removeEntry(site, password, username);
+			int rc = removeEntry(site, user, password, username);
 			explicit_bzero(password, sizeof password);
 			if (rc != VAULT_OK)
 			{

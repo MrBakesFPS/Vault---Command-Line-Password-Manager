@@ -12,7 +12,75 @@
 #include "vault.h"
 
 //======================================================================
-int closeVault(const char* masterPass, const char* username)
+
+static int compareEntries(const void* a, const void* b)
+{
+	const struct VaultItems* ia = a;
+	const struct VaultItems* ib = b;
+	int bySite = strcmp(ia->site, ib->site);
+	if (bySite != 0)
+		return bySite;
+	return strcmp(ia->user, ib->user);
+}
+//======================================================================
+
+VaultStatus confirmPassword(const char* masterPass, const char* username)
+{
+	uint8_t magic[4];
+	uint8_t version[2];
+	uint8_t salt[16];
+	uint8_t nonce[12];
+	uint8_t tag[16];
+	uint32_t key[8] = { 0 };
+	uint8_t* cipher = NULL;
+	size_t cipLen = 0;
+	uint8_t* derKey = NULL;
+	int status;
+
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
+
+	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		status = VAULT_ERR_INTERNAL;
+		goto cleanup;
+	}
+	for (size_t x = 0; x < 8; x++)
+	{
+		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
+	}
+
+	uint8_t aad[6];
+	for (size_t x = 0; x < 4; x++)
+		aad[x] = magic[x];
+	for (size_t x = 0; x < 2; x++)
+		aad[x + 4] = version[x];
+
+	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
+	{
+		status = VAULT_ERR_AUTH;
+		goto cleanup;
+	}
+	status = VAULT_OK;
+
+cleanup:
+	if (cipher)
+	{
+		explicit_bzero(cipher, cipLen);
+		free(cipher);
+	}
+	if (derKey)
+	{
+		explicit_bzero(derKey, SIZE_32);
+		free(derKey);
+	}
+	explicit_bzero(key, sizeof key);
+	return status;
+}
+//======================================================================
+VaultStatus closeVault(const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
 	uint8_t version[2];
@@ -53,6 +121,7 @@ int closeVault(const char* masterPass, const char* username)
 		status = VAULT_ERR_INTERNAL;
 		goto cleanup;
 	}
+
 	char path[512];
 	if (vaultPath(path, sizeof(path), 0, username) == VAULT_OK)
 	{
@@ -65,6 +134,7 @@ int closeVault(const char* masterPass, const char* username)
 	{
 		status = VAULT_ERR_IO;
 	}
+
 cleanup:
 	if (cipher)
 	{
@@ -81,7 +151,7 @@ cleanup:
 }
 
 //======================================================================
-int initVault(const char* masterPass, const char* username)
+VaultStatus initVault(const char* masterPass, const char* username)
 {
 	uint8_t magic[4] = { 'V', 'L', 'T', '1' };
 	uint8_t version[2] = { '0', '1' };
@@ -165,7 +235,7 @@ cleanup:
 }
 
 //======================================================================
-int removeEntry(const char* site, const char* masterPass, const char* username)
+VaultStatus removeEntry(const char* site, const char* user, const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
 	uint8_t version[2];
@@ -220,7 +290,7 @@ int removeEntry(const char* site, const char* masterPass, const char* username)
 	size_t found = 0;
 	for (size_t x = 0; x < vaultSize; x++)
 	{
-		if (strcmp(vaultItems[x].site, site) == 0)
+		if (strcmp(vaultItems[x].site, site) == 0 && strcmp(vaultItems[x].user, user) == 0)
 		{
 			for (size_t y = x; y < vaultSize - 1; y++)
 			{
@@ -296,7 +366,7 @@ cleanup:
 }
 
 //======================================================================
-int addEntry(const char* site, const char* user, const char* pass, const char* masterPass, const char* username)
+VaultStatus addEntry(const char* site, const char* user, const char* pass, const char* masterPass, const char* username)
 {
 	if (strlen(site) < SIZE_128 && strlen(user) < SIZE_128 && strlen(pass) < SIZE_128)
 	{
@@ -379,10 +449,21 @@ int addEntry(const char* site, const char* user, const char* pass, const char* m
 		status = VAULT_ERR_FULL;
 		goto cleanup;
 	}
+	for (size_t x = 0; x < vaultSize; x++)
+	{
+		if (strcmp(vaultItems[x].site, site) == 0 && strcmp(vaultItems[x].user, user) == 0)
+		{
+			status = VAULT_ERR_ITEM;
+			goto cleanup;
+		}
+	}
 	strcpy(vaultItems[vaultSize].site, site);
 	strcpy(vaultItems[vaultSize].user, user);
 	strcpy(vaultItems[vaultSize].pass, pass);
 	vaultSize++;
+
+	qsort(vaultItems, vaultSize, sizeof(struct VaultItems), compareEntries);
+	
 	blob = serializeEntries(vaultItems, vaultSize, &newLen);
 	if (blob == NULL)
 	{
@@ -441,7 +522,7 @@ cleanup:
 }
 
 //======================================================================
-int list(const char* masterPass, const char* username)
+VaultStatus list(const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
 	uint8_t version[2];
@@ -522,7 +603,7 @@ cleanup:
 }
 
 //======================================================================
-int get(const char* site, const char* masterPass, const char* username)
+VaultStatus get(const char* site, const char* masterPass, const char* username)
 {
 	uint8_t magic[4];
 	uint8_t version[2];
@@ -700,7 +781,7 @@ uint8_t* serializeEntries(struct VaultItems* vaultItems, size_t itemCount, size_
 }
 
 //======================================================================
-int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName)
+VaultStatus writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName)
 {
 	FILE* file = fopen(fileName, "wb");
 	if (file == NULL)
@@ -722,7 +803,7 @@ int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t n
 }
 
 //======================================================================
-int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t** cipherOut, size_t* cipLenOut, const char* username)
+VaultStatus readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t** cipherOut, size_t* cipLenOut, const char* username)
 {
 	char path[512];
 	if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK)
@@ -773,7 +854,7 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 }
 
 //======================================================================
-int vaultPath(char* dest, size_t size, int temp, const char* username)
+VaultStatus vaultPath(char* dest, size_t size, int temp, const char* username)
 {
 	size_t len = strlen(username);
 	if (len == 0)
@@ -792,7 +873,7 @@ int vaultPath(char* dest, size_t size, int temp, const char* username)
 }
 
 //======================================================================
-int randomBytes(uint8_t* buf, size_t len)
+VaultStatus randomBytes(uint8_t* buf, size_t len)
 {
 	size_t got = 0;
 	while (got < len)

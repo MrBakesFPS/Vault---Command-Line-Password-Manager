@@ -34,39 +34,56 @@ struct VaultItems
 };
 
 /*
- * Removes a current vault based on the username and passwords provided
- *
- * @param masterPass - The password used for decryption confirmation
- * @param username - The username for finding the vault
- *
- * @return -3 if the vault couldn't be removed
- * @return -2 if the vault couldn't be found
- * @return -1 if the vault failed to decrypt
- * @return 0 on success
+* Confirms the password and username of the vault
+* 
+* @param masterPass - The password used for decryption confirmation
+* @param username - The username for finding the vault
+* 
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
+* @return VAULT_OK
 */
-int closeVault(const char* masterPass, const char* username);
+VaultStatus confirmPassword(const char* masterPass, const char* username);
+
+/*
+* Removes a current vault based on the username and passwords provided
+*
+* @param masterPass - The password used for decryption confirmation
+* @param username - The username for finding the vault
+*
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_IO
+* @return VAULT_OK
+*/
+VaultStatus closeVault(const char* masterPass, const char* username);
 
 /*
 * Initializes a new vault with a Usernamd and Master Password
 *
-* @return -1 if the vault path couldn't be found
-* @return 0 on success
+* @param masterPass - The password used for decryption confirmation
+* @param username - The username for finding the vault
+* 
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int initVault(const char* masterPass, const char* username);
+VaultStatus initVault(const char* masterPass, const char* username);
 
 /*
 * Deletes an entry from a vault
 *
-* @param site - The site being added to the entry
+* @param site - The site being removed from the entry
+* @param user - The user being removed from the entry
 * @param masterPass - The password used for encrypting
 * @param username - The username used for finding the vault
 *
-* @return -3 if the item couldn't be found
-* @return -2 if the decrypt fails
-* @return -1 if the vault couldn't be read or found
-* @return 0 on success
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
+* @return VAULT_ERR_ITEM
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int removeEntry(const char* site, const char* masterPass, const char* username);
+VaultStatus removeEntry(const char* site, const char* user, const char* masterPass, const char* username);
 
 /*
 * Adds an entry to the vault
@@ -77,25 +94,26 @@ int removeEntry(const char* site, const char* masterPass, const char* username);
 * @param masterPass - The password used for encrypting
 * @param username - The username used for finding the vault
 *
-* @return -3 if any of the 3 parameters are beyond 128 bytes long
-* @return -2 if the decrypt fails
-* @return -1 if the vault couldn't be read or found
-* @return 0 on success
+* @return VAULT_ERR_FIELD_CHAR
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
+* @return VAULT_ERR_FULL
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int addEntry(const char* site, const char* user, const char* pass, const char* masterPass, const char* username);
+VaultStatus addEntry(const char* site, const char* user, const char* pass, const char* masterPass, const char* username);
 
 /*
 * Prints the sites and usernames of all items in the vault
 *
-* @param site - The site given to find the password
 * @param masterPass - The password used for decrypting
 * @param username - The username used for finding the vault
 *
-* @return -2 if the decrypt fails
-* @return -1 if the vault couldn't be read
-* @return 0 on success
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
+* @return VAULT_OK
 */
-int list(const char* masterPass, const char* username);
+VaultStatus list(const char* masterPass, const char* username);
 
 /*
 * Prints the site, username, and password from a given site name
@@ -104,12 +122,12 @@ int list(const char* masterPass, const char* username);
 * @param masterPass - The password used for decrypting
 * @param username - The username used for finding the vault
 *
-* @return -3 if the decrypt fails
-* @return -2 if the site couldn't be found
-* @return -1 if the vault couldn't be read
-* @return 0 on success
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
+* @return VAULT_ERR_ITEM
+* @return VAULT_OK
 */
-int get(const char* site, const char* masterPass, const char* username);
+VaultStatus get(const char* site, const char* masterPass, const char* username);
 
 /*
 * Turns a vault of text into a list of vault items
@@ -146,11 +164,10 @@ uint8_t* serializeEntries(struct VaultItems* vaultItems, size_t itemCount, size_
 * @param cipLen - The cipher length
 * @param fileName - The temporary filename used as a file failsafe
 *
-* @return -2 if failed to find vault
-* @return -1 if error opening the file
-* @return 0 on success
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName);
+VaultStatus writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName);
 
 /*
 * Reads from a vault based on the given username
@@ -164,11 +181,11 @@ int writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t n
 * @param cipLenOut - The cipher length
 * @param username - The username being used to find the vault
 * 
-* @return -2 if failed to find vault
-* @return -1 if error opening the file
-* @return 0 on success
+* @return VAULT_ERR_NOT_FOUND
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t** cipherOut, size_t* cipLenOut, const char* username);
+VaultStatus readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t** cipherOut, size_t* cipLenOut, const char* username);
 
 /*
 * Produces a vault path for where to store your vault
@@ -177,11 +194,12 @@ int readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t no
 * @param dest - The destination path being created
 * @param size - the size of the destination
 * @param temp - The temp code where 1 = temp, 0 = not temp
+* @param username - The username for the vault
 * 
-* @return - 0 on success
-* @return -1 if path is NULL
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int vaultPath(char* dest, size_t size, int temp, const char* username);
+VaultStatus vaultPath(char* dest, size_t size, int temp, const char* username);
 
 /*
 * Fills a buffer with a random byte string
@@ -189,8 +207,9 @@ int vaultPath(char* dest, size_t size, int temp, const char* username);
 * @param buf - The buffer for the random bytes
 * @param len - The length of the buffer
 * 
-* @return - 0 on success, -1 on fail to fill
+* @return VAULT_ERR_IO
+* @return VAULT_OK
 */
-int randomBytes(uint8_t* buf, size_t len);
+VaultStatus randomBytes(uint8_t* buf, size_t len);
 
 #endif
