@@ -57,8 +57,7 @@ int main(int argc, char*argv[])
 				status = -1;
 				goto cleanup;
 			}
-			printf("Type 'help' for a list of commands\n");
-			printf("Type 'exit' to log out\n\n");
+			printf("\nType 'help' for a list of commands\n\n");
 			loginVault(username);
 		}
 		else if (strcmp(argv[1], "init") == 0)
@@ -157,7 +156,7 @@ void printUsage()
 }
 
 /*
-* Logs into the vault CLI via username and password
+* Logs into and runs the vault CLI via username and password
 * 
 * @param username - The username for the user vault
 */
@@ -250,6 +249,7 @@ void loginVault(char username[SIZE_128])
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
+				printf("\n");
 				continue;
 			}
 			printf("Password removed from vault successfully!\n\n");
@@ -267,6 +267,7 @@ void loginVault(char username[SIZE_128])
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
+				printf("\n");
 				continue;
 			}
 		}
@@ -291,6 +292,7 @@ void loginVault(char username[SIZE_128])
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
+				printf("\n");
 				continue;
 			}
 		}
