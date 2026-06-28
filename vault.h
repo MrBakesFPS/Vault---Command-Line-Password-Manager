@@ -70,6 +70,24 @@ VaultStatus closeVault(const char* masterPass, const char* username);
 VaultStatus initVault(const char* masterPass, const char* username);
 
 /*
+* Replaces an entry's password
+*
+* @param site - The site being replaced
+* @param user - The user being replaced
+* @param currPass - The current password
+* @param newPass - The new password
+* @param masterPass - The password used for encrypting
+* @param username - The username used for finding the vault
+*
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
+* @return VAULT_ERR_ITEM
+* @return VAULT_ERR_IO
+* @return VAULT_OK
+*/
+VaultStatus replaceEntry(const char* site, const char* user, const char* newPass, const char* masterPass, const char* username);
+
+/*
 * Deletes an entry from a vault
 *
 * @param site - The site being removed from the entry

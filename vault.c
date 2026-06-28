@@ -235,6 +235,133 @@ cleanup:
 }
 
 //======================================================================
+VaultStatus replaceEntry(const char* site, const char* user, const char* newPass, const char* masterPass, const char* username)
+{
+	uint8_t magic[4];
+	uint8_t version[2];
+	uint8_t salt[16];
+	uint8_t nonce[12];
+	uint8_t tag[16];
+	uint32_t key[8] = { 0 };
+	uint8_t* cipher = NULL;
+	size_t cipLen = 0;
+	uint8_t* derKey = NULL;
+	struct VaultItems* vaultItems = NULL;
+	int status;
+	size_t newLen = 0;
+	uint8_t* blob = NULL;
+
+	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
+
+	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	if (derKey == NULL)
+	{
+		status = VAULT_ERR_INTERNAL;
+		goto cleanup;
+	}
+	for (size_t x = 0; x < 8; x++)
+	{
+		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
+	}
+
+	uint8_t aad[6];
+	for (size_t x = 0; x < 4; x++)
+		aad[x] = magic[x];
+	for (size_t x = 0; x < 2; x++)
+		aad[x + 4] = version[x];
+
+	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
+	{
+		status = VAULT_ERR_AUTH;
+		goto cleanup;
+	}
+
+	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+	if (vaultItems == NULL)
+	{
+		status = VAULT_ERR_INTERNAL;
+		goto cleanup;
+	}
+
+	size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
+	
+	size_t found = 0;
+	for (size_t x = 0; x < vaultSize; x++)
+	{
+		if (strcmp(vaultItems[x].site, site) == 0 && strcmp(vaultItems[x].user, user) == 0)
+		{
+			strcpy(vaultItems[x].pass, newPass);
+			found = 1;
+			break;
+		}
+	}
+	if (found == 1)
+	{
+		newLen = 0;
+		blob = serializeEntries(vaultItems, vaultSize, &newLen);
+		if (blob == NULL)
+		{
+			status = VAULT_ERR_INTERNAL;
+			goto cleanup;
+		}
+		if (randomBytes(nonce, 12) != VAULT_OK)
+		{
+			status = VAULT_ERR_IO;
+			goto cleanup;
+		}
+		gcmEncrypt(key, nonce, blob, newLen, aad, 6, tag);
+
+		char path[512];
+		char tempPath[512];
+		if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK || vaultPath(tempPath, sizeof(tempPath), 1, username) != VAULT_OK)
+		{
+			status = VAULT_ERR_IO;
+			goto cleanup;
+		}
+
+		int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
+		if (wrote == 0)
+		{
+			if (rename(tempPath, path) != 0)
+			{
+				status = VAULT_ERR_IO;
+				goto cleanup;
+			}
+		}
+		status = (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
+	}
+	else
+	{
+		status = VAULT_ERR_ITEM;
+	}
+cleanup:
+	if (cipher)
+	{
+		explicit_bzero(cipher, cipLen);
+		free(cipher);
+	}
+	if (derKey)
+	{
+		explicit_bzero(derKey, SIZE_32);
+		free(derKey);
+	}
+	if (vaultItems)
+	{
+		explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+		free(vaultItems);
+	}
+	if (blob)
+	{
+		explicit_bzero(blob, newLen);
+		free(blob);
+	}
+	explicit_bzero(key, sizeof key);
+	return status;
+}
+
+//======================================================================
 VaultStatus removeEntry(const char* site, const char* user, const char* masterPass, const char* username)
 {
 	uint8_t magic[4];

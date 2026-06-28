@@ -170,19 +170,21 @@ void loginVault(char username[SIZE_128])
 		if (fgets(userInput, SIZE_128, stdin) == NULL)
 			break;
 		userInput[strcspn(userInput, "\n")] = '\0';
-		printf("\n");
 		
 		if (strcmp(userInput, "help") == 0)
 		{
+			printf("\n");
 			printf(" * help -- Shows a list of commands.\n");
 			printf(" * add -- Adds a password to the vault.\n");
 			printf(" * remove -- Removes a password from the vault.\n");
+			printf(" * replace -- Replaces the password of an entry.\n");
 			printf(" * list -- Lists all sites and users in the vault.\n");
 			printf(" * get -- Gets the specified sites, username and password.\n");
 			printf(" * exit -- Exits the vault.\n\n");
 		}
 		else if (strcmp(userInput, "add") == 0)
 		{
+			printf("\n");
 			char site[SIZE_128];
 			char user[SIZE_128];
 			char pass[SIZE_128];
@@ -226,6 +228,7 @@ void loginVault(char username[SIZE_128])
 		}
 		else if (strcmp(userInput, "remove") == 0)
 		{
+			printf("\n");
 			char site[SIZE_128];
 			char user[SIZE_128];
 
@@ -239,6 +242,7 @@ void loginVault(char username[SIZE_128])
 			{
 				user[strcspn(user, "\n")] = '\0';
 			}
+			printf("\n");
 			if (verifyPassword(password, "Master Password: ") == -1)
 			{
 				printf("Wrong password!\n\n");
@@ -256,6 +260,7 @@ void loginVault(char username[SIZE_128])
 		}
 		else if (strcmp(userInput, "list") == 0)
 		{
+			printf("\n");
 			if (verifyPassword(password, "Master Password: ") == -1)
 			{
 				explicit_bzero(password, sizeof password);
@@ -273,6 +278,7 @@ void loginVault(char username[SIZE_128])
 		}
 		else if (strcmp(userInput, "get") == 0)
 		{
+			printf("\n");
 			char site[SIZE_128];
 			printf("Site: ");
 			if (fgets(site, SIZE_128, stdin) != NULL)
@@ -295,6 +301,45 @@ void loginVault(char username[SIZE_128])
 				printf("\n");
 				continue;
 			}
+		}
+		else if (strcmp(userInput, "replace") == 0)
+		{
+			printf("\n");
+			char site[SIZE_128];
+			char user[SIZE_128];
+			char newPass[SIZE_128];
+			printf("Site: ");
+			if (fgets(site, SIZE_128, stdin) != NULL)
+			{
+				site[strcspn(site, "\n")] = '\0';
+			}
+			printf("User: ");
+			if (fgets(user, SIZE_128, stdin) != NULL)
+			{
+				user[strcspn(user, "\n")] = '\0';
+			}
+			printf("New Pass: ");
+			disable_echo();
+			if (fgets(newPass, SIZE_128, stdin) != NULL)
+			{
+				newPass[strcspn(newPass, "\n")] = '\0';
+			}
+			enable_echo();
+			printf("\n\n");
+			if (verifyPassword(password, "Master Password: ") == -1)
+			{
+				printf("Wrong password!\n\n");
+				continue;
+			}
+			int rc = replaceEntry(site, user, newPass, password, username);
+			explicit_bzero(password, sizeof password);
+			if (rc != VAULT_OK)
+			{
+				reportError(rc);
+				printf("\n");
+				continue;
+			}
+			printf("Password replaced successfully!\n\n");
 		}
 	}
 }
