@@ -1,4 +1,4 @@
- ---------- Vault Command Line Project ----------
+# Vault Command Line Project
 
 Hello and welcome to the vault!
 
@@ -12,5 +12,4 @@ your vaults is encrypted and cleaned.
 
 Thank you for choosing Vault!
 
-------------- Tyson Koopman-Baker ---------------
-
+--Tyson Koopman-Baker
