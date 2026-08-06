@@ -256,49 +256,32 @@ uint8_t* sha256(uint8_t* message, size_t msgLength)
 
 uint8_t* padMessage(uint8_t* input, size_t* numBlocks, size_t msgLength)
 {
-	size_t length = msgLength + 1;
+	// The padded form is the message, an 0x80 marker, a zero fill, and
+	// an 8 byte big-endian bit count, rounded up to whole 64 byte
+	// blocks. That size is known up front, so allocate it once rather
+	// than growing the buffer a byte at a time.
+	if (msgLength > SIZE_MAX - 72)
+		return NULL;
+	size_t length = ((msgLength + 72) / 64) * 64;
+
 	uint8_t* myChar = malloc(length);
 	if (myChar == NULL)
 		return NULL;
 
-	for (size_t x = 0; x < msgLength; x++)
-	{
-		myChar[x] = input[x];
-	}
+	if (msgLength > 0)
+		memcpy(myChar, input, msgLength);
 
 	myChar[msgLength] = 0x80;
+	memset(myChar + msgLength + 1, 0x00, length - msgLength - 9);
 
-	while (length % 64 != 56)
-	{
-		length += 1;
-		uint8_t* temp = realloc(myChar, length);
-		if (temp == NULL)
-		{
-			free(myChar);
-			return NULL;
-		}
-		myChar = temp;
-		myChar[length - 1] = 0x00;
-	}
-
-	length += 8;
-	*numBlocks = length / 64;
-	uint8_t* temp2 = realloc(myChar, length);
-	if (temp2 == NULL)
-	{
-		free(myChar);
-		return NULL;
-	}
-	myChar = temp2;
-
-	unsigned long bitLen = (unsigned long)msgLength * 8;
-
-	for (size_t x = length - 1; x >= length - 8; x--)
+	uint64_t bitLen = (uint64_t)msgLength * 8;
+	for (size_t x = length; x-- > length - 8; )
 	{
 		myChar[x] = bitLen & 0xff;
 		bitLen >>= 8;
 	}
 
+	*numBlocks = length / 64;
 	return myChar;
 }
 //======================================================================

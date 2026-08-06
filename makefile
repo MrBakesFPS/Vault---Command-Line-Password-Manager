@@ -1,5 +1,7 @@
 CC      = gcc
-CFLAGS  = -std=gnu99 -Wall -Wextra
+# -O2 matters here: the build was previously unoptimized, which made the
+# 600k-iteration key derivation ~5x slower than it needs to be.
+CFLAGS  = -std=gnu99 -O2 -Wall -Wextra
 TARGET  = vault
 OBJS    = aes.o passHash.o vault.o main.o
 

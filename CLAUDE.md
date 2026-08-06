@@ -82,9 +82,16 @@ add a write path that skips this.
   (SHA-256, HMAC-SHA256 RFC 4231, PBKDF2-HMAC-SHA256, and NIST
   AES-256-GCM). If you touch `aes.c` or `passHash.c`, re-check them.
 - Build artifacts (`*.o`, `vault`) are gitignored, not tracked.
-- Known rough edges, not yet addressed: `padMessage` in `passHash.c`
-  reallocs one byte at a time (the bulk of the key-derivation cost);
-  `runDeAES` and the inverse-cipher helpers in `aes.c` are dead code
-  (GCM is CTR-based and only needs AES-encrypt); `gf128` branches on
-  key bits, so it isn't constant-time; `verifyPassword` in `main.c`
-  only reads a hidden line and verifies nothing, despite the name.
+- Build with optimization. `CFLAGS` carries `-O2` because the key
+  derivation is 600k iterations of hand-rolled SHA-256; an unoptimized
+  build is ~5x slower and dominates every other cost in the program.
+  Benchmark before concluding anything about hashing performance, and
+  benchmark at `-O2` — results at `-O0` do not carry over. `padMessage`
+  is a worked example: allocating once instead of reallocating per byte
+  is 13x faster in isolation and 18% faster end-to-end at `-O2`, but
+  measurably *slower* at `-O0`.
+- Known rough edges, not yet addressed: `runDeAES` and the
+  inverse-cipher helpers in `aes.c` are dead code (GCM is CTR-based and
+  only needs AES-encrypt); `gf128` branches on key bits, so it isn't
+  constant-time; `verifyPassword` in `main.c` only reads a hidden line
+  and verifies nothing, despite the name.
