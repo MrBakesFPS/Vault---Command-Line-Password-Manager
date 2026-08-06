@@ -4,32 +4,61 @@ A command-line password vault written in C, implementing its own crypto
 primitives from scratch (no OpenSSL/libsodium) as a learning project.
 
 ## Build & Run
-- `make` — builds the `vault` binary from the tracked `.o` files
+- `make` — compiles the sources into the `vault` binary
 - `make clean` — removes build artifacts
 - `make install` — copies `vault` to `/usr/local/bin`
 - Compiler: gcc, `-std=gnu99 -Wall -Wextra` (keep new code warning-clean)
 
 ## Usage
-- `./vault init` — create a new vault (prompts for username/password)
+- `./vault init` — create a new vault (prompts for username/password).
+  Creates `~/.config/vault/` (0700) if it doesn't exist.
 - `./vault login` — log into an existing vault, then drop into an
   interactive session (`help` lists in-session commands: list, get,
-  addEntry, replaceEntry, removeEntry, etc.)
+  add, remove, replace, exit)
 - `./vault close` — delete a vault (requires password confirmation)
+
+## Architecture
+`openSession` derives the AES key from the master password once, at
+login, and stores it in a `VaultSession` along with the username. Every
+entry function takes that session rather than a password, so the
+deliberately-slow PBKDF2 (600k iterations, ~2.9s) runs once per login
+instead of once per command. `closeSession` wipes the key.
+
+The tradeoff: the vault stays unlocked for the whole session rather
+than re-authenticating per command. An idle timeout would be the
+natural next step.
+
+All vault I/O funnels through two private helpers in `vault.c`:
+- `loadVault` — read, authenticate, decrypt, parse into `VaultItems`
+- `saveVault` — serialize, fresh nonce, encrypt, write, commit
+
+**New vault operations should go through these two.** They exist
+because the read/derive/decrypt preamble was previously copy-pasted
+across seven functions, which is how `closeVault` came to report a
+wrong password as `VAULT_ERR_INTERNAL` while the other six returned
+`VAULT_ERR_AUTH`.
 
 ## File Layout
 - `main.c` — CLI entry point, argument parsing, login session loop
-- `vault.c` / `vault.h` — vault file format, read/write, entry
-  add/remove/replace/list/get, `VaultStatus` error enum
+- `vault.c` / `vault.h` — `VaultSession`, vault file format, read/write,
+  entry add/remove/replace/list/get, `VaultStatus` error enum
 - `aes.c` / `aes.h` — AES-GCM encrypt/decrypt (hand-rolled)
 - `passHash.c` / `passHash.h` — PBKDF2 key derivation + HMAC-SHA256
   (hand-rolled)
 
 ## Vault File Format
-Files are written with a `VLT1` magic + 2-byte version, 16-byte salt,
+Files live at `~/.config/vault/vault.<username>.bin`, created 0600 in a
+0700 directory. Layout is a `VLT1` magic + 2-byte version, 16-byte salt,
 12-byte nonce, 16-byte GCM tag, then AES-GCM ciphertext of the
-serialized `VaultItems` (site/user/pass, 128 bytes each). See
-`writeVault`/`readVault`/`parse`/`serializeEntries` in vault.h for the
-exact contract.
+serialized `VaultItems` (site/user/pass, 128 bytes each), tab/newline
+delimited. Magic + version are the GCM additional authenticated data.
+See `writeVault`/`readVault`/`parse`/`serializeEntries` in vault.h for
+the exact contract.
+
+Writes go to a `.temp` sibling first: every `fwrite` is checked and
+fsynced before `commitVault` renames it into place, so a failed write
+leaves the existing vault untouched rather than truncating it. Don't
+add a write path that skips this.
 
 ## Conventions
 - Functions return `VaultStatus` (`VAULT_OK` = 0, negative = specific
@@ -38,10 +67,24 @@ exact contract.
   return codes) — match that style for new public functions.
 - Passwords/secrets are read via `disable_echo()`/`enable_echo()`
   (termios) — never print or log them.
+- Wipe key material with `explicit_bzero` before `free()` or before it
+  goes out of scope. Multi-allocation functions use a single
+  `goto cleanup` block so no error path can skip a wipe — follow that
+  pattern rather than duplicating frees per branch.
+- Library code returns status codes instead of printing; user-facing
+  messages belong in `reportError` in `main.c`.
 
 ## Notes
 - This is an educational/from-scratch crypto implementation, not
   audited — treat security review suggestions here as learning
   exercises, not production hardening advice.
-- Build artifacts (`*.o`, `vault` binary) are currently committed to
-  git — be aware `make` will overwrite them.
+- The primitives are verified against published test vectors
+  (SHA-256, HMAC-SHA256 RFC 4231, PBKDF2-HMAC-SHA256, and NIST
+  AES-256-GCM). If you touch `aes.c` or `passHash.c`, re-check them.
+- Build artifacts (`*.o`, `vault`) are gitignored, not tracked.
+- Known rough edges, not yet addressed: `padMessage` in `passHash.c`
+  reallocs one byte at a time (the bulk of the key-derivation cost);
+  `runDeAES` and the inverse-cipher helpers in `aes.c` are dead code
+  (GCM is CTR-based and only needs AES-encrypt); `gf128` branches on
+  key bits, so it isn't constant-time; `verifyPassword` in `main.c`
+  only reads a hidden line and verifies nothing, despite the name.
