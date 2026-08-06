@@ -24,9 +24,16 @@ entry function takes that session rather than a password, so the
 deliberately-slow PBKDF2 (600k iterations, ~2.9s) runs once per login
 instead of once per command. `closeSession` wipes the key.
 
-The tradeoff: the vault stays unlocked for the whole session rather
-than re-authenticating per command. An idle timeout would be the
-natural next step.
+The vault stays unlocked for the whole session rather than
+re-authenticating per command, so `loginVault` locks it after
+`SESSION_TIMEOUT_SECONDS` (default 300) with no input at the prompt:
+`waitForInput` polls stdin against a fixed deadline, and a timeout
+breaks the loop so `closeSession` wipes the key. Override the default
+with `-DSESSION_TIMEOUT_SECONDS=N`.
+
+The timeout covers the main prompt only. Walking away midway through
+`add`'s sub-prompts leaves the vault unlocked until that command is
+finished or the process dies.
 
 All vault I/O funnels through two private helpers in `vault.c`:
 - `loadVault` — read, authenticate, decrypt, parse into `VaultItems`

@@ -10,9 +10,24 @@
 
 #include <termios.h>
 #include <unistd.h>
+#include <poll.h>
+#include <time.h>
 #include "aes.h"
 #include "passHash.h"
 #include "vault.h"
+
+// How long the unlocked session may sit at the prompt before it locks
+// itself. The session holds a live vault key, so leaving it unattended
+// indefinitely is the main risk of unlocking once per login.
+// Override at build time with -DSESSION_TIMEOUT_SECONDS=N.
+#ifndef SESSION_TIMEOUT_SECONDS
+#define SESSION_TIMEOUT_SECONDS 300
+#endif
+
+// Report the timeout in whichever unit reads sensibly, so an overridden
+// value doesn't produce "0 minutes".
+#define TIMEOUT_AMOUNT (SESSION_TIMEOUT_SECONDS >= 120 ? SESSION_TIMEOUT_SECONDS / 60 : SESSION_TIMEOUT_SECONDS)
+#define TIMEOUT_UNIT   (SESSION_TIMEOUT_SECONDS >= 120 ? "minutes" : "seconds")
 
 //======================================================================
 
@@ -23,6 +38,7 @@ int readSecret(char secret[SIZE_128], const char* printText);
 void disable_echo();
 void enable_echo();
 static void reportError(int rc);
+static int waitForInput(int seconds);
 
 //======================================================================
 int main(int argc, char*argv[])
@@ -188,6 +204,19 @@ void loginVault(const VaultSession* session)
 	while (strcmp(userInput, "exit") != 0)
 	{
 		printf("%s@vault> ", session->username);
+		// The prompt has no newline, so it would sit in the buffer while
+		// we block below.
+		fflush(stdout);
+
+		int ready = waitForInput(SESSION_TIMEOUT_SECONDS);
+		if (ready <= 0)
+		{
+			if (ready == 0)
+				printf("\nSession locked after %d %s idle. Run 'vault login' to unlock.\n",
+					TIMEOUT_AMOUNT, TIMEOUT_UNIT);
+			break;
+		}
+
 		if (fgets(userInput, SIZE_128, stdin) == NULL)
 			break;
 		userInput[strcspn(userInput, "\n")] = '\0';
@@ -201,7 +230,9 @@ void loginVault(const VaultSession* session)
 			printf(" * replace -- Replaces the password of an entry.\n");
 			printf(" * list -- Lists all sites and users in the vault.\n");
 			printf(" * get -- Gets the specified sites, username and password.\n");
-			printf(" * exit -- Exits the vault.\n\n");
+			printf(" * exit -- Exits the vault.\n");
+			printf("\nThe vault locks itself after %d %s with no input.\n\n",
+				TIMEOUT_AMOUNT, TIMEOUT_UNIT);
 		}
 		else if (strcmp(userInput, "add") == 0)
 		{
@@ -388,6 +419,51 @@ int readSecret(char secret[SIZE_128], const char* printText)
 	}
 	enable_echo();
 	return -1;
+}
+
+/*
+ * Waits for stdin to become readable, up to a deadline.
+ *
+ * The deadline is computed once up front, so a signal arriving partway
+ * through cannot extend the wait by restarting the clock.
+ *
+ * @param seconds - How long to wait before giving up
+ *
+ * @return -1 on error
+ * @return 0 if the time ran out with no input
+ * @return 1 if stdin is readable (which includes reaching EOF)
+ */
+static int waitForInput(int seconds)
+{
+	struct timespec deadline;
+	if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
+		return -1;
+	deadline.tv_sec += seconds;
+
+	for (;;)
+	{
+		struct timespec now;
+		if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+			return -1;
+
+		long msLeft = (long)(deadline.tv_sec - now.tv_sec) * 1000L
+			+ (deadline.tv_nsec - now.tv_nsec) / 1000000L;
+		if (msLeft <= 0)
+			return 0;
+
+		struct pollfd pfd;
+		pfd.fd = STDIN_FILENO;
+		pfd.events = POLLIN;
+
+		int r = poll(&pfd, 1, (int)msLeft);
+		if (r < 0)
+		{
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+		return r > 0 ? 1 : 0;
+	}
 }
 
 /*
