@@ -14,14 +14,13 @@
 //======================================================================
 
 static uint8_t sbox[256];
-static uint8_t invsbox[256];
 static int sboxReady = 0;
 
 static void ensureSbox(void)
 {
     if (!sboxReady)
     {
-        initSbox(sbox, invsbox);
+        initSbox(sbox);
         sboxReady = 1;
     }
 }
@@ -292,48 +291,7 @@ void runAES(const uint32_t schedule[60], uint8_t state[16])
 }
 //======================================================================
 
-void runDeAES(const uint32_t block[8], uint8_t state[16])
-{
-
-	uint8_t sbox[256];
-	uint8_t invsbox[256];
-	initSbox(sbox, invsbox);
-
-	uint32_t schedule[60];
-	uint8_t currKey[16]; // grabs first 4 32t from schedule
-
-	createScheduleAES(block, schedule, sbox);
-	for (int x = 56; x >= 0; x -= 4)
-	{
-		for (size_t y = (size_t)x; y < (size_t)x + 4; y++)
-		{
-			for (size_t z = 0; z < 4; z++)
-			{
-				currKey[(y - (size_t)x) * 4 + z] = (schedule[y] >> (8 * (3 - z))) & 0xff;
-			}
-		}
-		if (x == 56)
-		{
-			addRoundKey(state, currKey);
-			invShiftRows(state);
-			invSubBytes(state, invsbox);
-		}
-		else if (x > 0)
-		{
-			addRoundKey(state, currKey);
-			invMixColumns(state);
-			invShiftRows(state);
-			invSubBytes(state, invsbox);
-		}
-		else
-		{
-			addRoundKey(state, currKey);
-		}
-	}
-}
-//======================================================================
-
-void initSbox(uint8_t sbox[256], uint8_t invSbox[256])
+void initSbox(uint8_t sbox[256])
 {
 	uint8_t p = 1, q = 1;
 	do {
@@ -346,9 +304,6 @@ void initSbox(uint8_t sbox[256], uint8_t invSbox[256])
 		sbox[p] = xformed ^ 0x63;                    // affine transform
 	} while (p != 1);
 	sbox[0] = 0x63;
-
-	for (size_t i = 0; i < 256; i++)   // inverse table, free: if S(i)=v then InvS(v)=i
-		invSbox[sbox[i]] = i;
 }
 //======================================================================
 
@@ -390,13 +345,6 @@ void subBytes(uint8_t state[16], const uint8_t sbox[256])
 }
 //======================================================================
 
-void invSubBytes(uint8_t state[16], const uint8_t invsbox[256])
-{
-	for (size_t i = 0; i < 16; i++)
-		state[i] = invsbox[state[i]];
-}
-//======================================================================
-
 void shiftRows(uint8_t state[16])
 {
 	uint8_t t;
@@ -426,35 +374,6 @@ void shiftRows(uint8_t state[16])
 }
 //======================================================================
 
-void invShiftRows(uint8_t state[16])
-{
-	uint8_t t;
-
-	// row 3 (3,7,11,15): rotate right 3 == rotate left 1
-	t = state[3];
-	state[3] = state[7];
-	state[7] = state[11];
-	state[11] = state[15];
-	state[15] = t;
-
-	// row 2 (2,6,10,14): rotate right 2  (swap the two pairs)
-	t = state[14];
-	state[14] = state[6];
-	state[6] = t;
-
-	t = state[10];
-	state[10] = state[2];
-	state[2] = t;
-
-	// row 1 (indices 1,5,9,13): rotate right 1
-	t = state[13];
-	state[13] = state[9];
-	state[9] = state[5];
-	state[5] = state[1];
-	state[1] = t;
-}
-//======================================================================
-
 void mixColumns(uint8_t state[16])
 {
 	for (size_t c = 0; c < 4; c++)
@@ -468,50 +387,9 @@ void mixColumns(uint8_t state[16])
 }
 //======================================================================
 
-void invMixColumns(uint8_t state[16])
-{
-	for (size_t c = 0; c < 4; c++)
-	{
-		uint8_t a0 = state[4 * c], a1 = state[4 * c + 1], a2 = state[4 * c + 2], a3 = state[4 * c + 3];
-		state[4 * c] = mul14(a0) ^ mul11(a1) ^ mul13(a2) ^ mul9(a3);
-		state[4 * c + 1] = mul9(a0) ^ mul14(a1) ^ mul11(a2) ^ mul13(a3);
-		state[4 * c + 2] = mul13(a0) ^ mul9(a1) ^ mul14(a2) ^ mul11(a3);
-		state[4 * c + 3] = mul11(a0) ^ mul13(a1) ^ mul9(a2) ^ mul14(a3);
-	}
-}
-//======================================================================
-
 uint8_t xtime(uint8_t x)
 {
 	return (x << 1) ^ ((x & 0x80) ? 0x1b : 0x00);
-}
-//======================================================================
-
-uint8_t mul9(uint8_t a)
-{
-	uint8_t x2 = xtime(a), x4 = xtime(x2), x8 = xtime(x4);
-	return x8 ^ a;
-}
-//======================================================================
-
-uint8_t mul11(uint8_t a)
-{
-	uint8_t x2 = xtime(a), x4 = xtime(x2), x8 = xtime(x4);
-	return x8 ^ x2 ^ a;
-}
-//======================================================================
-
-uint8_t mul13(uint8_t a)
-{
-	uint8_t x2 = xtime(a), x4 = xtime(x2), x8 = xtime(x4);
-	return x8 ^ x4 ^ a;
-}
-//======================================================================
-
-uint8_t mul14(uint8_t a)
-{
-	uint8_t x2 = xtime(a), x4 = xtime(x2), x8 = xtime(x4);
-	return x8 ^ x4 ^ x2;
 }
 //======================================================================
 

@@ -110,20 +110,11 @@ void ctr(const uint32_t schedule[60], const uint8_t nonce[12], uint8_t* buf, siz
 void runAES(const uint32_t schedule[60], uint8_t state[16]);
 
 /*
-* Encrypts a given 16 byte state with a 32 byte block
-* 
-* @param block - The block being decrypted
-* @param state - The final state
-*/
-void runDeAES(const uint32_t block[8], uint8_t state[16]);
-
-/*
-* Initializes the S-Box and Inverse S-Box for encryption/decryption
+* Initializes the S-Box used for encryption
 *
 * @param sbox - The S-Box being initialized
-* @param invSbox - The Inverse S-Box being initialized
 */
-void initSbox(uint8_t sbox[256], uint8_t invSbox[256]);
+void initSbox(uint8_t sbox[256]);
 
 /*
 * Creates an AES Key schedule from a given AES Key
@@ -151,26 +142,11 @@ void addRoundKey(uint8_t state[16], const uint8_t roundKey[16]);
 void subBytes(uint8_t state[16], const uint8_t sbox[256]);
 
 /*
-* Subs each of the 4x4 grid of bytes (16 bytes) through the given Inverse S-Box
-*
-* @param state - The current state rows being swapped
-* @param invsbox - The inverse S-Box being used
-*/
-void invSubBytes(uint8_t state[16], const uint8_t invsbox[256]);
-
-/*
 * Shifts the rows of a 4x4 grid of bytes (16 bytes) left based on row number
 *
 * @param state - The current state rows being shifted
 */
 void shiftRows(uint8_t state[16]);
-
-/*
-* Reverse shifts the rows of a 4x4 grid of bytes (16 bytes) right based on row number
-*
-* @param state - The current state rows being shifted
-*/
-void invShiftRows(uint8_t state[16]);
 
 /*
 * Mixes the columns of a 4x4 grid of bytes (16 bytes) by xoring multiplied bytes together
@@ -180,13 +156,6 @@ void invShiftRows(uint8_t state[16]);
 void mixColumns(uint8_t state[16]);
 
 /*
-* Unmixes the columns of a 4x4 grid of bytes (16 bytes) by xoring multiplied bytes together
-*
-* @param state - The current state columns being mixed
-*/
-void invMixColumns(uint8_t state[16]);
-
-/*
 * Multiplies the given byte by 2, carrying the top bit to the other side
 *
 * @param x - The byte being multiplied
@@ -194,42 +163,6 @@ void invMixColumns(uint8_t state[16]);
 * @return - The modified byte
 */
 uint8_t xtime(uint8_t x);
-
-/*
-* Multiplies the given byte by 2, nine times, carrying the top bit to the other side
-*
-* @param a - The byte being multiplied
-*
-* @return - The modified byte
-*/
-uint8_t mul9(uint8_t a);
-
-/*
-* Multiplies the given byte by 2, eleven times, carrying the top bit to the other side
-*
-* @param a - The byte being multiplied
-*
-* @return - The modified byte
-*/
-uint8_t mul11(uint8_t a);
-
-/*
-* Multiplies the given byte by 2, thirteen times, carrying the top bit to the other side
-*
-* @param a - The byte being multiplied
-*
-* @return - The modified byte
-*/
-uint8_t mul13(uint8_t a);
-
-/*
-* Multiplies the given byte by 2, fourteen times, carrying the top bit to the other side
-*
-* @param a - The byte being multiplied
-*
-* @return - The modified byte
-*/
-uint8_t mul14(uint8_t a);
 
 /*
 * Transforms a word by rotating left, pushing through the

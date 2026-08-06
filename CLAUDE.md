@@ -90,8 +90,9 @@ add a write path that skips this.
   is a worked example: allocating once instead of reallocating per byte
   is 13x faster in isolation and 18% faster end-to-end at `-O2`, but
   measurably *slower* at `-O0`.
-- Known rough edges, not yet addressed: `runDeAES` and the
-  inverse-cipher helpers in `aes.c` are dead code (GCM is CTR-based and
-  only needs AES-encrypt); `gf128` branches on key bits, so it isn't
-  constant-time; `verifyPassword` in `main.c` only reads a hidden line
-  and verifies nothing, despite the name.
+- `aes.c` implements the forward cipher only. GCM is CTR-based, so it
+  never runs AES decryption; the inverse cipher was removed as dead
+  code. Don't re-add it unless something actually calls it.
+- Known rough edges, not yet addressed: `gf128` branches on key bits,
+  so it isn't constant-time; `verifyPassword` in `main.c` only reads a
+  hidden line and verifies nothing, despite the name.
