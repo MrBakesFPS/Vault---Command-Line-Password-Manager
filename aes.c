@@ -193,31 +193,32 @@ void gf128(uint32_t key[4], uint32_t block[4])
 	{
 		shiftB[i] = block[i];
 	}
-	uint32_t checkBit = 0x80000000;
-	uint32_t pushBit = 0x00000000;
-
+	// Every decision below is made with a 0 / all-ones mask instead of a
+	// branch. The key here is GHASH's H, so branching on its bits (or on
+	// the state derived from it) leaks them through timing.
 	for (size_t x = 0; x < 4; x++)
 	{
 		for (size_t y = 0; y < 32; y++)
 		{
-			if ((shiftB[3] & 0x01) == 0x01)
-				pushBit = 0xe1000000;
-			else
-				pushBit = 0x00000000;
-			if ((key[x] & (checkBit >> y)) == (checkBit >> y))
-			{
-				for (size_t i = 0; i < 4; i++)
-					accumulator[i] ^= shiftB[i];
-			}
-			for (size_t i = 4; i-- > 0; )
-			{
-				if (((shiftB[i] & 0x01) == 0x01) && i < 3)
-					shiftB[i + 1] ^= 0x80000000;
+			// Fold shiftB in when the current key bit is set.
+			uint32_t keyMask = (uint32_t)0 - ((key[x] >> (31 - y)) & 1u);
+			for (size_t i = 0; i < 4; i++)
+				accumulator[i] ^= shiftB[i] & keyMask;
 
-				shiftB[i] >>= 1;
-				if (i == 0)
-					shiftB[i] ^= pushBit;
+			// The bit about to fall off the bottom decides whether the
+			// reduction polynomial gets xored back in.
+			uint32_t reduce = ((uint32_t)0 - (shiftB[3] & 1u)) & 0xe1000000;
+
+			// Shift the 128 bit value right one, carrying between words.
+			// shiftB[0] is the most significant word.
+			uint32_t carry = 0;
+			for (size_t i = 0; i < 4; i++)
+			{
+				uint32_t nextCarry = shiftB[i] & 1u;
+				shiftB[i] = (shiftB[i] >> 1) | (carry << 31);
+				carry = nextCarry;
 			}
+			shiftB[0] ^= reduce;
 		}
 	}
 	for (size_t i = 0; i < 4; i++)

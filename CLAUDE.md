@@ -93,6 +93,9 @@ add a write path that skips this.
 - `aes.c` implements the forward cipher only. GCM is CTR-based, so it
   never runs AES decryption; the inverse cipher was removed as dead
   code. Don't re-add it unless something actually calls it.
-- Known rough edges, not yet addressed: `gf128` branches on key bits,
-  so it isn't constant-time; `verifyPassword` in `main.c` only reads a
-  hidden line and verifies nothing, despite the name.
+- `gf128` is written branch-free on purpose: the GHASH subkey H is
+  secret, so every decision uses a 0 / all-ones mask rather than an
+  `if`. Keep it that way, and re-check the disassembly for
+  data-dependent jumps if you touch it.
+- Known rough edges, not yet addressed: `verifyPassword` in `main.c`
+  only reads a hidden line and verifies nothing, despite the name.
