@@ -17,7 +17,7 @@
 //======================================================================
 
 void printUsage();
-void loginVault(char username[SIZE_128]);
+void loginVault(const VaultSession* session);
 int verifyUsername(char username[SIZE_128]);
 int verifyPassword(char password[SIZE_128], const char* printText);
 void disable_echo();
@@ -30,7 +30,11 @@ int main(int argc, char*argv[])
 	char username[SIZE_128];
 	char password[SIZE_128];
 	char confirmPass[SIZE_128];
+	VaultSession session;
 	int status;
+
+	closeSession(&session);
+
 	if (argc < 2)
 	{
 		printUsage();
@@ -50,7 +54,11 @@ int main(int argc, char*argv[])
 				status = -1;
 				goto cleanup;
 			}
-			int rc = confirmPassword(password, username);
+
+			// Derive the key once here; every command in the session
+			// below reuses it instead of re-running the 600k iterations.
+			int rc = openSession(password, username, &session);
+			explicit_bzero(password, sizeof password);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -58,7 +66,7 @@ int main(int argc, char*argv[])
 				goto cleanup;
 			}
 			printf("\nType 'help' for a list of commands\n\n");
-			loginVault(username);
+			loginVault(&session);
 		}
 		else if (strcmp(argv[1], "init") == 0)
 		{
@@ -119,7 +127,18 @@ int main(int argc, char*argv[])
 				goto cleanup;
 			}
 
-			int rc = closeVault(password, username);
+			// Opening the session is what proves the master password
+			// before anything gets deleted.
+			int rc = openSession(password, username, &session);
+			explicit_bzero(password, sizeof password);
+			if (rc != VAULT_OK)
+			{
+				reportError(rc);
+				status = -1;
+				goto cleanup;
+			}
+
+			rc = closeVault(&session);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -140,6 +159,7 @@ int main(int argc, char*argv[])
 	status = 0;
 
 cleanup:
+	closeSession(&session);
 	explicit_bzero(username, sizeof username);
 	explicit_bzero(password, sizeof password);
 	explicit_bzero(confirmPass, sizeof confirmPass);
@@ -148,7 +168,7 @@ cleanup:
 }
 
 /*
- * Usage: vault init | add <site> <user> <pass> | get <site> | list | remove <site>
+ * Usage: vault init | login | close
  */
 void printUsage()
 {
@@ -156,21 +176,22 @@ void printUsage()
 }
 
 /*
-* Logs into and runs the vault CLI via username and password
-* 
-* @param username - The username for the user vault
+* Runs the interactive vault CLI against an already unlocked session.
+* The master password is not asked for again; openSession already
+* derived and verified the key.
+*
+* @param session - The unlocked session
 */
-void loginVault(char username[SIZE_128])
+void loginVault(const VaultSession* session)
 {
 	char userInput[SIZE_128] = "";
-	char password[SIZE_128];
 	while (strcmp(userInput, "exit") != 0)
 	{
-		printf("%s@vault> ", username);
+		printf("%s@vault> ", session->username);
 		if (fgets(userInput, SIZE_128, stdin) == NULL)
 			break;
 		userInput[strcspn(userInput, "\n")] = '\0';
-		
+
 		if (strcmp(userInput, "help") == 0)
 		{
 			printf("\n");
@@ -185,9 +206,9 @@ void loginVault(char username[SIZE_128])
 		else if (strcmp(userInput, "add") == 0)
 		{
 			printf("\n");
-			char site[SIZE_128];
-			char user[SIZE_128];
-			char pass[SIZE_128];
+			char site[SIZE_128] = "";
+			char user[SIZE_128] = "";
+			char pass[SIZE_128] = "";
 
 			printf("Site: ");
 			if (fgets(site, SIZE_128, stdin) != NULL)
@@ -206,18 +227,10 @@ void loginVault(char username[SIZE_128])
 				pass[strcspn(pass, "\n")] = '\0';
 			}
 			enable_echo();
-			printf("\n\n");
+			printf("\n");
 
-			if (verifyPassword(password, "Master Password: ") == -1)
-			{
-				explicit_bzero(pass, sizeof pass);
-				explicit_bzero(password, sizeof password);
-				printf("Wrong password!\n");
-				continue;
-			}
-			int rc = addEntry(site, user, pass, password, username);
+			int rc = addEntry(site, user, pass, session);
 			explicit_bzero(pass, sizeof pass);
-			explicit_bzero(password, sizeof password);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -229,8 +242,8 @@ void loginVault(char username[SIZE_128])
 		else if (strcmp(userInput, "remove") == 0)
 		{
 			printf("\n");
-			char site[SIZE_128];
-			char user[SIZE_128];
+			char site[SIZE_128] = "";
+			char user[SIZE_128] = "";
 
 			printf("Site: ");
 			if (fgets(site, SIZE_128, stdin) != NULL)
@@ -242,15 +255,8 @@ void loginVault(char username[SIZE_128])
 			{
 				user[strcspn(user, "\n")] = '\0';
 			}
-			printf("\n");
-			if (verifyPassword(password, "Master Password: ") == -1)
-			{
-				explicit_bzero(password, sizeof password);
-				printf("Wrong password!\n\n");
-				continue;
-			}
-			int rc = removeEntry(site, user, password, username);
-			explicit_bzero(password, sizeof password);
+
+			int rc = removeEntry(site, user, session);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -261,15 +267,7 @@ void loginVault(char username[SIZE_128])
 		}
 		else if (strcmp(userInput, "list") == 0)
 		{
-			printf("\n");
-			if (verifyPassword(password, "Master Password: ") == -1)
-			{
-				explicit_bzero(password, sizeof password);
-				printf("Wrong password!\n");
-				continue;
-			}
-			int rc = list(password, username);
-			explicit_bzero(password, sizeof password);
+			int rc = list(session);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -280,21 +278,14 @@ void loginVault(char username[SIZE_128])
 		else if (strcmp(userInput, "get") == 0)
 		{
 			printf("\n");
-			char site[SIZE_128];
+			char site[SIZE_128] = "";
 			printf("Site: ");
 			if (fgets(site, SIZE_128, stdin) != NULL)
 			{
 				site[strcspn(site, "\n")] = '\0';
 			}
 
-			if (verifyPassword(password, "Master Password: ") == -1)
-			{
-				explicit_bzero(password, sizeof password);
-				printf("Wrong password!\n");
-				continue;
-			}
-			int rc = get(site, password, username);
-			explicit_bzero(password, sizeof password);
+			int rc = get(site, session);
 			printf("\n");
 			if (rc != VAULT_OK)
 			{
@@ -306,9 +297,10 @@ void loginVault(char username[SIZE_128])
 		else if (strcmp(userInput, "replace") == 0)
 		{
 			printf("\n");
-			char site[SIZE_128];
-			char user[SIZE_128];
-			char newPass[SIZE_128];
+			char site[SIZE_128] = "";
+			char user[SIZE_128] = "";
+			char newPass[SIZE_128] = "";
+
 			printf("Site: ");
 			if (fgets(site, SIZE_128, stdin) != NULL)
 			{
@@ -326,17 +318,10 @@ void loginVault(char username[SIZE_128])
 				newPass[strcspn(newPass, "\n")] = '\0';
 			}
 			enable_echo();
-			printf("\n\n");
-			if (verifyPassword(password, "Master Password: ") == -1)
-			{
-				explicit_bzero(newPass, sizeof newPass);
-				explicit_bzero(password, sizeof password);
-				printf("Wrong password!\n\n");
-				continue;
-			}
-			int rc = replaceEntry(site, user, newPass, password, username);
+			printf("\n");
+
+			int rc = replaceEntry(site, user, newPass, session);
 			explicit_bzero(newPass, sizeof newPass);
-			explicit_bzero(password, sizeof password);
 			if (rc != VAULT_OK)
 			{
 				reportError(rc);
@@ -350,9 +335,9 @@ void loginVault(char username[SIZE_128])
 
 /*
  * Verifies that the username is attached to an active vault
- * 
+ *
  * @param username - The username being searched for
- * 
+ *
  * @return -2 if failed to write to file
  * @return -1 if failed to find path
  * @return 0 on success
@@ -360,6 +345,7 @@ void loginVault(char username[SIZE_128])
 int verifyUsername(char username[SIZE_128])
 {
 	printf("Username: ");
+	username[0] = '\0';
 	if (fgets(username, SIZE_128, stdin) != NULL)
 	{
 		username[strcspn(username, "\n")] = '\0';
@@ -388,6 +374,7 @@ int verifyUsername(char username[SIZE_128])
 int verifyPassword(char password[SIZE_128], const char* printText)
 {
 	printf("%s", printText);
+	password[0] = '\0';
 	disable_echo();
 	if (fgets(password, SIZE_128, stdin) != NULL)
 	{
@@ -427,7 +414,7 @@ void enable_echo()
 
 /*
  * Reports which error caused a problem
- * 
+ *
  * @param rc - The error check number
  */
 static void reportError(int rc)

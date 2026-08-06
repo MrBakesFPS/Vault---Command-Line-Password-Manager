@@ -14,6 +14,22 @@
 #include "passHash.h"
 #include "vault.h"
 
+// PBKDF2 cost. Deliberately slow, so it runs once per login (see
+// openSession) rather than once per command.
+#define PBKDF2_ITERATIONS 600000
+
+/*
+* The plaintext preamble of a vault file. Read back on every load and
+* written out unchanged, since the salt fixes the key and the magic and
+* version are covered by the GCM tag as additional authenticated data.
+*/
+typedef struct
+{
+	uint8_t magic[4];
+	uint8_t version[2];
+	uint8_t salt[16];
+} VaultHeader;
+
 //======================================================================
 
 static int compareEntries(const void* a, const void* b)
@@ -93,42 +109,204 @@ static VaultStatus commitVault(const char* tempPath, const char* path)
 }
 //======================================================================
 
-VaultStatus confirmPassword(const char* masterPass, const char* username)
+/*
+* Builds the 6 bytes of additional authenticated data (magic+version)
+* that bind a vault's header to its GCM tag
+*
+* @param header - The header being authenticated
+* @param aad - The 6 byte buffer being filled
+*/
+static void buildAad(const VaultHeader* header, uint8_t aad[6])
 {
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
+	for (size_t x = 0; x < 4; x++)
+		aad[x] = header->magic[x];
+	for (size_t x = 0; x < 2; x++)
+		aad[x + 4] = header->version[x];
+}
+//======================================================================
+
+/*
+* Packs the 32 derived key bytes into the 8 big-endian words AES wants
+*
+* @param derKey - The 32 bytes coming out of pbkdf2
+* @param key - The 8 word AES key being filled
+*/
+static void unpackKey(const uint8_t derKey[32], uint32_t key[8])
+{
+	for (size_t x = 0; x < 8; x++)
+	{
+		key[x] = ((uint32_t)derKey[x * 4] << 24)
+			| ((uint32_t)derKey[x * 4 + 1] << 16)
+			| ((uint32_t)derKey[x * 4 + 2] << 8)
+			| (uint32_t)derKey[x * 4 + 3];
+	}
+}
+//======================================================================
+
+/*
+* Rejects field values the flat tab/newline vault format can't round
+* trip, and values too long for a VaultItems field
+*
+* @param field - The site, user, or password being checked
+*
+* @return VAULT_ERR_FIELD_LEN
+* @return VAULT_ERR_FIELD_CHAR
+* @return VAULT_OK
+*/
+static VaultStatus validateField(const char* field)
+{
+	size_t len = strlen(field);
+	if (len >= SIZE_128)
+		return VAULT_ERR_FIELD_LEN;
+
+	for (size_t x = 0; x < len; x++)
+	{
+		if (field[x] == '\t' || field[x] == '\n')
+			return VAULT_ERR_FIELD_CHAR;
+	}
+	return VAULT_OK;
+}
+//======================================================================
+
+/*
+* Reads the session's vault off disk, authenticates and decrypts it with
+* the session key, and parses the plaintext into vaultItems
+*
+* @param session - The unlocked session holding the vault key
+* @param header - The header read back off disk
+* @param vaultItems - A SIZE_256 array being filled
+* @param itemCount - The number of entries parsed
+*
+* @return VAULT_ERR_NOT_FOUND
+* @return VAULT_ERR_AUTH
+* @return VAULT_ERR_IO
+* @return VAULT_OK
+*/
+static VaultStatus loadVault(const VaultSession* session, VaultHeader* header, struct VaultItems* vaultItems, size_t* itemCount)
+{
 	uint8_t nonce[12];
 	uint8_t tag[16];
-	uint32_t key[8] = { 0 };
+	uint8_t aad[6];
 	uint8_t* cipher = NULL;
 	size_t cipLen = 0;
-	uint8_t* derKey = NULL;
-	int status;
 
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
+	VaultStatus rc = readVault(header->magic, header->version, header->salt, nonce, tag, &cipher, &cipLen, session->username);
 	if (rc != VAULT_OK)
 		return rc;
 
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	buildAad(header, aad);
+
+	VaultStatus status;
+	if (gcmDecrypt(session->key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
+	{
+		status = VAULT_ERR_AUTH;
+	}
+	else
+	{
+		*itemCount = parse(cipher, cipLen, vaultItems, SIZE_256);
+		status = VAULT_OK;
+	}
+
+	explicit_bzero(cipher, cipLen);
+	free(cipher);
+	return status;
+}
+//======================================================================
+
+/*
+* Serializes, encrypts under a fresh nonce, and durably replaces the
+* session's vault file
+*
+* @param session - The unlocked session holding the vault key
+* @param header - The header to write back out
+* @param vaultItems - The entries being stored
+* @param itemCount - The number of entries
+*
+* @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_IO
+* @return VAULT_OK
+*/
+static VaultStatus saveVault(const VaultSession* session, const VaultHeader* header, struct VaultItems* vaultItems, size_t itemCount)
+{
+	uint8_t nonce[12];
+	uint8_t tag[16];
+	uint8_t aad[6];
+	char path[512];
+	char tempPath[512];
+	VaultStatus status;
+	size_t blobLen = 0;
+
+	uint8_t* blob = serializeEntries(vaultItems, itemCount, &blobLen);
+	if (blob == NULL)
+		return VAULT_ERR_INTERNAL;
+
+	// Never reuse a nonce with the same key.
+	if (randomBytes(nonce, 12) != VAULT_OK)
+	{
+		status = VAULT_ERR_IO;
+		goto cleanup;
+	}
+
+	buildAad(header, aad);
+	gcmEncrypt(session->key, nonce, blob, blobLen, aad, 6, tag);
+
+	if (vaultPath(path, sizeof path, 0, session->username) != VAULT_OK
+		|| vaultPath(tempPath, sizeof tempPath, 1, session->username) != VAULT_OK)
+	{
+		status = VAULT_ERR_IO;
+		goto cleanup;
+	}
+
+	if (writeVault(header->magic, header->version, header->salt, nonce, tag, blob, blobLen, tempPath) != VAULT_OK)
+	{
+		status = VAULT_ERR_IO;
+		goto cleanup;
+	}
+	status = commitVault(tempPath, path);
+
+cleanup:
+	explicit_bzero(blob, blobLen);
+	free(blob);
+	return status;
+}
+//======================================================================
+
+VaultStatus openSession(const char* masterPass, const char* username, VaultSession* session)
+{
+	VaultHeader header;
+	uint8_t nonce[12];
+	uint8_t tag[16];
+	uint8_t aad[6];
+	uint8_t* cipher = NULL;
+	uint8_t* derKey = NULL;
+	size_t cipLen = 0;
+	VaultStatus status;
+
+	explicit_bzero(session, sizeof *session);
+
+	if (strlen(username) >= sizeof session->username)
+		return VAULT_ERR_FIELD_LEN;
+
+	VaultStatus rc = readVault(header.magic, header.version, header.salt, nonce, tag, &cipher, &cipLen, username);
+	if (rc != VAULT_OK)
+		return rc;
+
+	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), header.salt, 16, PBKDF2_ITERATIONS);
 	if (derKey == NULL)
 	{
 		status = VAULT_ERR_INTERNAL;
 		goto cleanup;
 	}
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
 
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
+	memcpy(session->username, username, strlen(username) + 1);
+	unpackKey(derKey, session->key);
 
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
+	buildAad(&header, aad);
+
+	// The tag check is what actually proves the password was right.
+	if (gcmDecrypt(session->key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
 	{
+		explicit_bzero(session, sizeof *session);
 		status = VAULT_ERR_AUTH;
 		goto cleanup;
 	}
@@ -145,345 +323,126 @@ cleanup:
 		explicit_bzero(derKey, SIZE_32);
 		free(derKey);
 	}
-	explicit_bzero(key, sizeof key);
 	return status;
 }
 //======================================================================
-VaultStatus closeVault(const char* masterPass, const char* username)
+
+void closeSession(VaultSession* session)
 {
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint8_t* cipher = NULL;
-	size_t cipLen = 0;
-	uint8_t* derKey = NULL;
-	int status;
-	uint32_t key[8] = { 0 };
-
-	// use gcm to decrypt and tell if the password worked
-
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
-	if (rc != VAULT_OK)
-		return rc;
-
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
-	if (derKey == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
-
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
-
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
-	{
-		status = VAULT_ERR_AUTH;
-		goto cleanup;
-	}
-
-	char path[512];
-	if (vaultPath(path, sizeof(path), 0, username) == VAULT_OK)
-	{
-		if (remove(path) == 0)
-			status = VAULT_OK;
-		else
-			status = VAULT_ERR_IO;
-	}
-	else
-	{
-		status = VAULT_ERR_IO;
-	}
-
-cleanup:
-	if (cipher)
-	{
-		explicit_bzero(cipher, cipLen);
-		free(cipher);
-	}
-	if (derKey)
-	{
-		explicit_bzero(derKey, SIZE_32);
-		free(derKey);
-	}
-	explicit_bzero(key, sizeof key);
-	return status;
+	explicit_bzero(session, sizeof *session);
 }
-
 //======================================================================
+
+VaultStatus closeVault(const VaultSession* session)
+{
+	// The session already proved the master password at openSession.
+	char path[512];
+	if (vaultPath(path, sizeof path, 0, session->username) != VAULT_OK)
+		return VAULT_ERR_IO;
+
+	if (remove(path) != 0)
+		return VAULT_ERR_IO;
+
+	return VAULT_OK;
+}
+//======================================================================
+
 VaultStatus initVault(const char* masterPass, const char* username)
 {
-	uint8_t magic[4] = { 'V', 'L', 'T', '1' };
-	uint8_t version[2] = { '0', '1' };
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint8_t aad[6];
-	uint32_t key[8] = { 0 };
-	uint8_t* buffer = NULL;
-	size_t bufLen = 0;
-	int status;
+	VaultHeader header = { { 'V', 'L', 'T', '1' }, { '0', '1' }, { 0 } };
+	VaultSession session;
 	uint8_t* derKey = NULL;
+	VaultStatus status;
 
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
+	explicit_bzero(&session, sizeof session);
+
+	if (strlen(username) >= sizeof session.username)
+		return VAULT_ERR_FIELD_LEN;
 
 	// Do this before the (slow) key derivation so an unusable config
 	// directory fails immediately rather than after 600k iterations.
 	if (ensureVaultDir() != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
+		return VAULT_ERR_IO;
 
-	if (randomBytes(salt, 16) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
-	if (randomBytes(nonce, 12) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
+	if (randomBytes(header.salt, 16) != VAULT_OK)
+		return VAULT_ERR_IO;
 
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
+	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), header.salt, 16, PBKDF2_ITERATIONS);
 	if (derKey == NULL)
 	{
 		status = VAULT_ERR_INTERNAL;
 		goto cleanup;
 	}
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
 
-	buffer = malloc(1);
-	if (buffer == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-	gcmEncrypt(key, nonce, buffer, bufLen, aad, 6, tag);
-	
-	char path[512];
-	char tempPath[512];
-	if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK || vaultPath(tempPath, sizeof(tempPath), 1, username) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
+	memcpy(session.username, username, strlen(username) + 1);
+	unpackKey(derKey, session.key);
 
-	if (writeVault(magic, version, salt, nonce, tag, buffer, bufLen, tempPath) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
-	status = commitVault(tempPath, path);
+	status = saveVault(&session, &header, NULL, 0);
 
 cleanup:
-	if (buffer)
-	{
-		explicit_bzero(buffer, bufLen);
-		free(buffer);
-	}
 	if (derKey)
 	{
 		explicit_bzero(derKey, SIZE_32);
 		free(derKey);
 	}
-	explicit_bzero(key, sizeof key);
+	closeSession(&session);
 	return status;
 }
-
 //======================================================================
-VaultStatus replaceEntry(const char* site, const char* user, const char* newPass, const char* masterPass, const char* username)
+
+VaultStatus replaceEntry(const char* site, const char* user, const char* newPass, const VaultSession* session)
 {
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint32_t key[8] = { 0 };
-	uint8_t* cipher = NULL;
-	size_t cipLen = 0;
-	uint8_t* derKey = NULL;
+	VaultHeader header;
 	struct VaultItems* vaultItems = NULL;
-	int status;
-	size_t newLen = 0;
-	uint8_t* blob = NULL;
+	size_t vaultSize = 0;
+	VaultStatus status;
 
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
-	if (rc != VAULT_OK)
-		return rc;
-
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
-	if (derKey == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
-
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
-
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
-	{
-		status = VAULT_ERR_AUTH;
-		goto cleanup;
-	}
+	status = validateField(newPass);
+	if (status != VAULT_OK)
+		return status;
 
 	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
+		return VAULT_ERR_INTERNAL;
 
-	size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
-	
-	size_t found = 0;
+	status = loadVault(session, &header, vaultItems, &vaultSize);
+	if (status != VAULT_OK)
+		goto cleanup;
+
+	status = VAULT_ERR_ITEM;
 	for (size_t x = 0; x < vaultSize; x++)
 	{
 		if (strcmp(vaultItems[x].site, site) == 0 && strcmp(vaultItems[x].user, user) == 0)
 		{
-			strcpy(vaultItems[x].pass, newPass);
-			found = 1;
+			memcpy(vaultItems[x].pass, newPass, strlen(newPass) + 1);
+			status = saveVault(session, &header, vaultItems, vaultSize);
 			break;
 		}
 	}
-	if (found == 1)
-	{
-		newLen = 0;
-		blob = serializeEntries(vaultItems, vaultSize, &newLen);
-		if (blob == NULL)
-		{
-			status = VAULT_ERR_INTERNAL;
-			goto cleanup;
-		}
-		if (randomBytes(nonce, 12) != VAULT_OK)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
-		gcmEncrypt(key, nonce, blob, newLen, aad, 6, tag);
 
-		char path[512];
-		char tempPath[512];
-		if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK || vaultPath(tempPath, sizeof(tempPath), 1, username) != VAULT_OK)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
-
-		if (writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath) != VAULT_OK)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
-		status = commitVault(tempPath, path);
-	}
-	else
-	{
-		status = VAULT_ERR_ITEM;
-	}
 cleanup:
-	if (cipher)
-	{
-		explicit_bzero(cipher, cipLen);
-		free(cipher);
-	}
-	if (derKey)
-	{
-		explicit_bzero(derKey, SIZE_32);
-		free(derKey);
-	}
-	if (vaultItems)
-	{
-		explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
-		free(vaultItems);
-	}
-	if (blob)
-	{
-		explicit_bzero(blob, newLen);
-		free(blob);
-	}
-	explicit_bzero(key, sizeof key);
+	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	free(vaultItems);
 	return status;
 }
-
 //======================================================================
-VaultStatus removeEntry(const char* site, const char* user, const char* masterPass, const char* username)
+
+VaultStatus removeEntry(const char* site, const char* user, const VaultSession* session)
 {
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint32_t key[8] = { 0 };
-	uint8_t* cipher = NULL;
-	size_t cipLen = 0;
-	uint8_t* derKey = NULL;
+	VaultHeader header;
 	struct VaultItems* vaultItems = NULL;
-	int status;
-	size_t newLen = 0;
-	uint8_t* blob = NULL;
-
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
-	if (rc != VAULT_OK)
-		return rc;
-
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
-	if (derKey == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
-
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
-
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
-	{
-		status = VAULT_ERR_AUTH;
-		goto cleanup;
-	}
+	size_t vaultSize = 0;
+	VaultStatus status;
 
 	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
+		return VAULT_ERR_INTERNAL;
 
-	size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
-	
-	size_t found = 0;
+	status = loadVault(session, &header, vaultItems, &vaultSize);
+	if (status != VAULT_OK)
+		goto cleanup;
+
+	status = VAULT_ERR_ITEM;
 	for (size_t x = 0; x < vaultSize; x++)
 	{
 		if (strcmp(vaultItems[x].site, site) == 0 && strcmp(vaultItems[x].user, user) == 0)
@@ -493,148 +452,42 @@ VaultStatus removeEntry(const char* site, const char* user, const char* masterPa
 				vaultItems[y] = vaultItems[y + 1];
 			}
 			vaultSize--;
-			found = 1;
+			status = saveVault(session, &header, vaultItems, vaultSize);
 			break;
 		}
 	}
-	if (found == 1)
-	{
-		newLen = 0;
-		blob = serializeEntries(vaultItems, vaultSize, &newLen);
-		if (blob == NULL)
-		{
-			status = VAULT_ERR_INTERNAL;
-			goto cleanup;
-		}
-		if (randomBytes(nonce, 12) != VAULT_OK)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
-		gcmEncrypt(key, nonce, blob, newLen, aad, 6, tag);
 
-		char path[512];
-		char tempPath[512];
-		if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK || vaultPath(tempPath, sizeof(tempPath), 1, username) != VAULT_OK)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
-
-		if (writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath) != VAULT_OK)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
-		status = commitVault(tempPath, path);
-	}
-	else
-	{
-		status = VAULT_ERR_ITEM;
-	}
 cleanup:
-	if (cipher)
-	{
-		explicit_bzero(cipher, cipLen);
-		free(cipher);
-	}
-	if (derKey)
-	{
-		explicit_bzero(derKey, SIZE_32);
-		free(derKey);
-	}
-	if (vaultItems)
-	{
-		explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
-		free(vaultItems);
-	}
-	if (blob)
-	{
-		explicit_bzero(blob, newLen);
-		free(blob);
-	}
-	explicit_bzero(key, sizeof key);
+	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	free(vaultItems);
 	return status;
 }
-
 //======================================================================
-VaultStatus addEntry(const char* site, const char* user, const char* pass, const char* masterPass, const char* username)
+
+VaultStatus addEntry(const char* site, const char* user, const char* pass, const VaultSession* session)
 {
-	if (strlen(site) < SIZE_128 && strlen(user) < SIZE_128 && strlen(pass) < SIZE_128)
-	{
-		size_t siteLen = strlen(site);
-		size_t userLen = strlen(user);
-		size_t passLen = strlen(pass);
-
-		for (size_t x = 0; x < siteLen; x++)
-		{
-			if (site[x] == '\t' || site[x] == '\n')
-				return VAULT_ERR_FIELD_CHAR;
-		}
-		for (size_t x = 0; x < userLen; x++)
-		{
-			if (user[x] == '\t' || user[x] == '\n')
-				return VAULT_ERR_FIELD_CHAR;
-		}
-		for (size_t x = 0; x < passLen; x++)
-		{
-			if (pass[x] == '\t' || pass[x] == '\n')
-				return VAULT_ERR_FIELD_CHAR;
-		}
-	}
-	else
-		return VAULT_ERR_FIELD_LEN;
-
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint32_t key[8] = { 0 };
-	uint8_t* cipher = NULL;
-	size_t cipLen = 0;
-	uint8_t* derKey = NULL;
+	VaultHeader header;
 	struct VaultItems* vaultItems = NULL;
-	int status;
-	size_t newLen = 0;
-	uint8_t* blob = NULL;
+	size_t vaultSize = 0;
+	VaultStatus status;
 
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
-	if (rc != VAULT_OK)
-		return rc;
-
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
-	if (derKey == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
-
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
-
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
-	{
-		status = VAULT_ERR_AUTH;
-		goto cleanup;
-	}
+	status = validateField(site);
+	if (status != VAULT_OK)
+		return status;
+	status = validateField(user);
+	if (status != VAULT_OK)
+		return status;
+	status = validateField(pass);
+	if (status != VAULT_OK)
+		return status;
 
 	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
+		return VAULT_ERR_INTERNAL;
 
-	size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
+	status = loadVault(session, &header, vaultItems, &vaultSize);
+	if (status != VAULT_OK)
+		goto cleanup;
 
 	if (vaultSize >= SIZE_256)
 	{
@@ -649,117 +502,37 @@ VaultStatus addEntry(const char* site, const char* user, const char* pass, const
 			goto cleanup;
 		}
 	}
-	strcpy(vaultItems[vaultSize].site, site);
-	strcpy(vaultItems[vaultSize].user, user);
-	strcpy(vaultItems[vaultSize].pass, pass);
+
+	memcpy(vaultItems[vaultSize].site, site, strlen(site) + 1);
+	memcpy(vaultItems[vaultSize].user, user, strlen(user) + 1);
+	memcpy(vaultItems[vaultSize].pass, pass, strlen(pass) + 1);
 	vaultSize++;
 
 	qsort(vaultItems, vaultSize, sizeof(struct VaultItems), compareEntries);
-	
-	blob = serializeEntries(vaultItems, vaultSize, &newLen);
-	if (blob == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-	if (randomBytes(nonce, 12) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
-	gcmEncrypt(key, nonce, blob, newLen, aad, 6, tag);
 
-	char path[512];
-	char tempPath[512];
-	if (vaultPath(path, sizeof(path), 0, username) != VAULT_OK || vaultPath(tempPath, sizeof(tempPath), 1, username) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
-
-	if (writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath) != VAULT_OK)
-	{
-		status = VAULT_ERR_IO;
-		goto cleanup;
-	}
-	status = commitVault(tempPath, path);
+	status = saveVault(session, &header, vaultItems, vaultSize);
 
 cleanup:
-	if (cipher)
-	{
-		explicit_bzero(cipher, cipLen);
-		free(cipher);
-	}
-	if (derKey)
-	{
-		explicit_bzero(derKey, SIZE_32);
-		free(derKey);
-	}
-	if (vaultItems)
-	{
-		explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
-		free(vaultItems);
-	}
-	if (blob)
-	{
-		explicit_bzero(blob, newLen);
-		free(blob);
-	}
-	explicit_bzero(key, sizeof key);
+	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	free(vaultItems);
 	return status;
 }
-
 //======================================================================
-VaultStatus list(const char* masterPass, const char* username)
+
+VaultStatus list(const VaultSession* session)
 {
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint32_t key[8] = { 0 };
-	uint8_t* cipher = NULL;
-	size_t cipLen = 0;
-	uint8_t* derKey = NULL;
+	VaultHeader header;
 	struct VaultItems* vaultItems = NULL;
-	int status;
+	size_t vaultSize = 0;
+	VaultStatus status;
 
-
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
-	if (rc != VAULT_OK)
-		return rc;
-
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
-	if (derKey == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
-
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
-
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
-	{
-		status = VAULT_ERR_AUTH;
-		goto cleanup;
-	}
-	
 	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
+		return VAULT_ERR_INTERNAL;
+
+	status = loadVault(session, &header, vaultItems, &vaultSize);
+	if (status != VAULT_OK)
 		goto cleanup;
-	}
-	size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
 
 	printf("\n%-15s\t%-15s\t%-15s\n", "Site", "User", "Password");
 	printf("%-15s\t%-15s\t%-15s\n", "----", "----", "--------");
@@ -769,80 +542,30 @@ VaultStatus list(const char* masterPass, const char* username)
 	}
 	printf("\n");
 	status = VAULT_OK;
-	
+
 cleanup:
-	if (cipher)
-	{
-		explicit_bzero(cipher, cipLen);
-		free(cipher);
-	}
-	if (derKey)
-	{
-		explicit_bzero(derKey, SIZE_32);
-		free(derKey);
-	}
-	if (vaultItems)
-	{
-		explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
-		free(vaultItems);
-	}
-	explicit_bzero(key, sizeof key);
+	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	free(vaultItems);
 	return status;
 }
-
 //======================================================================
-VaultStatus get(const char* site, const char* masterPass, const char* username)
+
+VaultStatus get(const char* site, const VaultSession* session)
 {
-	uint8_t magic[4];
-	uint8_t version[2];
-	uint8_t salt[16];
-	uint8_t nonce[12];
-	uint8_t tag[16];
-	uint32_t key[8] = { 0 };
-	uint8_t* derKey = NULL;
-	uint8_t* cipher = NULL;
+	VaultHeader header;
 	struct VaultItems* vaultItems = NULL;
-	size_t cipLen = 0;
-	int status;
-
-	int rc = readVault(magic, version, salt, nonce, tag, &cipher, &cipLen, username);
-	if (rc != VAULT_OK)
-		return rc;
-
-	derKey = pbkdf2((uint8_t*)masterPass, strlen(masterPass), salt, 16, 600000);
-	if (derKey == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
-
-	for (size_t x = 0; x < 8; x++)
-	{
-		key[x] = ((uint32_t)derKey[x * 4] << 24) | ((uint32_t)derKey[x * 4 + 1] << 16) | ((uint32_t)derKey[x * 4 + 2] << 8) | (uint32_t)derKey[x * 4 + 3];
-	}
-
-	uint8_t aad[6];
-	for (size_t x = 0; x < 4; x++)
-		aad[x] = magic[x];
-	for (size_t x = 0; x < 2; x++)
-		aad[x + 4] = version[x];
-
-	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != 0)
-	{
-		status = VAULT_ERR_AUTH;
-		goto cleanup;
-	}
+	size_t vaultSize = 0;
+	int found = 0;
+	VaultStatus status;
 
 	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
-	{
-		status = VAULT_ERR_INTERNAL;
-		goto cleanup;
-	}
+		return VAULT_ERR_INTERNAL;
 
-	size_t vaultSize = parse(cipher, cipLen, vaultItems, SIZE_256);
-	int found = 0;
-	
+	status = loadVault(session, &header, vaultItems, &vaultSize);
+	if (status != VAULT_OK)
+		goto cleanup;
+
 	printf("\n%-15s\t%-15s\t%-15s\n", "Site", "User", "Password");
 	printf("%-15s\t%-15s\t%-15s\n", "----", "----", "--------");
 	for (size_t x = 0; x < vaultSize; x++)
@@ -856,26 +579,12 @@ VaultStatus get(const char* site, const char* masterPass, const char* username)
 	status = found ? VAULT_OK : VAULT_ERR_ITEM;
 
 cleanup:
-	if (cipher)
-	{
-		explicit_bzero(cipher, cipLen);
-		free(cipher);
-	}
-	if (derKey)
-	{
-		explicit_bzero(derKey, SIZE_32);
-		free(derKey);
-	}
-	if (vaultItems)
-	{
-		explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
-		free(vaultItems);
-	}
-	explicit_bzero(key, sizeof key);
+	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	free(vaultItems);
 	return status;
 }
-
 //======================================================================
+
 size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size_t maxItems)
 {
 	size_t txtIndex = 0;
@@ -969,7 +678,7 @@ uint8_t* serializeEntries(struct VaultItems* vaultItems, size_t itemCount, size_
 }
 
 //======================================================================
-VaultStatus writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName)
+VaultStatus writeVault(const uint8_t magic[4], const uint8_t version[2], const uint8_t salt[16], const uint8_t nonce[12], const uint8_t tag[16], const uint8_t* cipher, size_t cipLen, const char* fileName)
 {
 	// 0600 at creation time: never let the vault exist world-readable,
 	// not even for the moment between fopen and a later chmod.
@@ -1023,45 +732,41 @@ VaultStatus readVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], ui
 		return VAULT_ERR_IO;
 	FILE* file = fopen(path, "rb");
 	if (file == NULL)
-	{
-		printf("Error opening file...\n");
 		return VAULT_ERR_NOT_FOUND;
-	}
-	else
+
+	fseek(file, 0, SEEK_END);
+	long total = ftell(file);
+	fseek(file, 0, SEEK_SET);
+
+	if (total < 50)
 	{
-		fseek(file, 0, SEEK_END);
-		long total = ftell(file);
-		fseek(file, 0, SEEK_SET);
-
-		if (total < 50)
-		{
-			fclose(file);
-			return VAULT_ERR_IO;
-		}
-
-		size_t cipLen = (size_t)total - 50;
-
-		if (fread(magic, sizeof(uint8_t), 4, file) != 4 || fread(version, sizeof(uint8_t), 2, file) != 2 || fread(salt, sizeof(uint8_t), 16, file) != 16 || fread(nonce, sizeof(uint8_t), 12, file) != 12 || fread(tag, sizeof(uint8_t), 16, file) != 16)
-		{
-			fclose(file);
-			return VAULT_ERR_IO;
-		}
-
-		uint8_t* cipher = malloc(sizeof(uint8_t) * (cipLen ? cipLen : 1));
-		if (cipher == NULL)
-		{
-			fclose(file);
-			return VAULT_ERR_IO;
-		}
-		if (fread(cipher, sizeof(uint8_t), cipLen, file) != cipLen)
-		{
-			free(cipher);
-			fclose(file);
-			return VAULT_ERR_IO;
-		}
-		*cipherOut = cipher;
-		*cipLenOut = cipLen;
+		fclose(file);
+		return VAULT_ERR_IO;
 	}
+
+	size_t cipLen = (size_t)total - 50;
+
+	if (fread(magic, sizeof(uint8_t), 4, file) != 4 || fread(version, sizeof(uint8_t), 2, file) != 2 || fread(salt, sizeof(uint8_t), 16, file) != 16 || fread(nonce, sizeof(uint8_t), 12, file) != 12 || fread(tag, sizeof(uint8_t), 16, file) != 16)
+	{
+		fclose(file);
+		return VAULT_ERR_IO;
+	}
+
+	uint8_t* cipher = malloc(sizeof(uint8_t) * (cipLen ? cipLen : 1));
+	if (cipher == NULL)
+	{
+		fclose(file);
+		return VAULT_ERR_IO;
+	}
+	if (fread(cipher, sizeof(uint8_t), cipLen, file) != cipLen)
+	{
+		free(cipher);
+		fclose(file);
+		return VAULT_ERR_IO;
+	}
+	*cipherOut = cipher;
+	*cipLenOut = cipLen;
+
 	fclose(file);
 	return VAULT_OK;
 }
