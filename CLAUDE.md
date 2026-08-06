@@ -31,9 +31,14 @@ re-authenticating per command, so `loginVault` locks it after
 breaks the loop so `closeSession` wipes the key. Override the default
 with `-DSESSION_TIMEOUT_SECONDS=N`.
 
-The timeout covers the main prompt only. Walking away midway through
-`add`'s sub-prompts leaves the vault unlocked until that command is
-finished or the process dies.
+Every prompt in the session goes through `promptLine`, including the
+Site/User/Pass sub-prompts, so abandoning a command half way locks the
+vault too. Don't read a session prompt with a bare `fgets`.
+
+`promptLine` disables echo *before* waiting, not after. The terminal
+echoes each keystroke as it is typed and canonical mode only makes the
+line readable once Enter is pressed, so waiting first would put the
+whole secret on screen before echo was ever turned off.
 
 All vault I/O funnels through two private helpers in `vault.c`:
 - `loadVault` — read, authenticate, decrypt, parse into `VaultItems`

@@ -39,6 +39,12 @@ void disable_echo();
 void enable_echo();
 static void reportError(int rc);
 static int waitForInput(int seconds);
+static int promptLine(char dest[SIZE_128], const char* prompt, int hidden);
+
+// promptLine outcomes
+#define PROMPT_OK       0
+#define PROMPT_EOF    (-1)
+#define PROMPT_TIMEOUT (-2)
 
 //======================================================================
 int main(int argc, char*argv[])
@@ -201,25 +207,20 @@ void printUsage()
 void loginVault(const VaultSession* session)
 {
 	char userInput[SIZE_128] = "";
+	char prompt[SIZE_256];
+	int timedOut = 0;
+	int pr;
+
+	snprintf(prompt, sizeof prompt, "%s@vault> ", session->username);
+
 	while (strcmp(userInput, "exit") != 0)
 	{
-		printf("%s@vault> ", session->username);
-		// The prompt has no newline, so it would sit in the buffer while
-		// we block below.
-		fflush(stdout);
-
-		int ready = waitForInput(SESSION_TIMEOUT_SECONDS);
-		if (ready <= 0)
+		pr = promptLine(userInput, prompt, 0);
+		if (pr != PROMPT_OK)
 		{
-			if (ready == 0)
-				printf("\nSession locked after %d %s idle. Run 'vault login' to unlock.\n",
-					TIMEOUT_AMOUNT, TIMEOUT_UNIT);
+			timedOut = (pr == PROMPT_TIMEOUT);
 			break;
 		}
-
-		if (fgets(userInput, SIZE_128, stdin) == NULL)
-			break;
-		userInput[strcspn(userInput, "\n")] = '\0';
 
 		if (strcmp(userInput, "help") == 0)
 		{
@@ -241,24 +242,14 @@ void loginVault(const VaultSession* session)
 			char user[SIZE_128] = "";
 			char pass[SIZE_128] = "";
 
-			printf("Site: ");
-			if (fgets(site, SIZE_128, stdin) != NULL)
+			if ((pr = promptLine(site, "Site: ", 0)) != PROMPT_OK
+				|| (pr = promptLine(user, "User: ", 0)) != PROMPT_OK
+				|| (pr = promptLine(pass, "Pass: ", 1)) != PROMPT_OK)
 			{
-				site[strcspn(site, "\n")] = '\0';
+				explicit_bzero(pass, sizeof pass);
+				timedOut = (pr == PROMPT_TIMEOUT);
+				break;
 			}
-			printf("User: ");
-			if (fgets(user, SIZE_128, stdin) != NULL)
-			{
-				user[strcspn(user, "\n")] = '\0';
-			}
-			printf("Pass: ");
-			disable_echo();
-			if (fgets(pass, SIZE_128, stdin) != NULL)
-			{
-				pass[strcspn(pass, "\n")] = '\0';
-			}
-			enable_echo();
-			printf("\n");
 
 			int rc = addEntry(site, user, pass, session);
 			explicit_bzero(pass, sizeof pass);
@@ -276,15 +267,11 @@ void loginVault(const VaultSession* session)
 			char site[SIZE_128] = "";
 			char user[SIZE_128] = "";
 
-			printf("Site: ");
-			if (fgets(site, SIZE_128, stdin) != NULL)
+			if ((pr = promptLine(site, "Site: ", 0)) != PROMPT_OK
+				|| (pr = promptLine(user, "User: ", 0)) != PROMPT_OK)
 			{
-				site[strcspn(site, "\n")] = '\0';
-			}
-			printf("User: ");
-			if (fgets(user, SIZE_128, stdin) != NULL)
-			{
-				user[strcspn(user, "\n")] = '\0';
+				timedOut = (pr == PROMPT_TIMEOUT);
+				break;
 			}
 
 			int rc = removeEntry(site, user, session);
@@ -310,10 +297,10 @@ void loginVault(const VaultSession* session)
 		{
 			printf("\n");
 			char site[SIZE_128] = "";
-			printf("Site: ");
-			if (fgets(site, SIZE_128, stdin) != NULL)
+			if ((pr = promptLine(site, "Site: ", 0)) != PROMPT_OK)
 			{
-				site[strcspn(site, "\n")] = '\0';
+				timedOut = (pr == PROMPT_TIMEOUT);
+				break;
 			}
 
 			int rc = get(site, session);
@@ -332,24 +319,14 @@ void loginVault(const VaultSession* session)
 			char user[SIZE_128] = "";
 			char newPass[SIZE_128] = "";
 
-			printf("Site: ");
-			if (fgets(site, SIZE_128, stdin) != NULL)
+			if ((pr = promptLine(site, "Site: ", 0)) != PROMPT_OK
+				|| (pr = promptLine(user, "User: ", 0)) != PROMPT_OK
+				|| (pr = promptLine(newPass, "New Pass: ", 1)) != PROMPT_OK)
 			{
-				site[strcspn(site, "\n")] = '\0';
+				explicit_bzero(newPass, sizeof newPass);
+				timedOut = (pr == PROMPT_TIMEOUT);
+				break;
 			}
-			printf("User: ");
-			if (fgets(user, SIZE_128, stdin) != NULL)
-			{
-				user[strcspn(user, "\n")] = '\0';
-			}
-			printf("New Pass: ");
-			disable_echo();
-			if (fgets(newPass, SIZE_128, stdin) != NULL)
-			{
-				newPass[strcspn(newPass, "\n")] = '\0';
-			}
-			enable_echo();
-			printf("\n");
 
 			int rc = replaceEntry(site, user, newPass, session);
 			explicit_bzero(newPass, sizeof newPass);
@@ -362,6 +339,12 @@ void loginVault(const VaultSession* session)
 			printf("Password replaced successfully!\n\n");
 		}
 	}
+
+	// Reached from the main prompt and from any sub-prompt, so a command
+	// abandoned half way through locks the vault too.
+	if (timedOut)
+		printf("\nSession locked after %d %s idle. Run 'vault login' to unlock.\n",
+			TIMEOUT_AMOUNT, TIMEOUT_UNIT);
 }
 
 /*
@@ -464,6 +447,58 @@ static int waitForInput(int seconds)
 		}
 		return r > 0 ? 1 : 0;
 	}
+}
+
+/*
+ * Prints a prompt and reads one line, subject to the session idle
+ * timeout. Used for every prompt inside an unlocked session so that
+ * walking away part way through a command locks the vault just as
+ * walking away at the main prompt does.
+ *
+ * @param dest - Buffer receiving the line, emptied on any failure
+ * @param prompt - Text to print before waiting
+ * @param hidden - Non-zero to read with terminal echo off
+ *
+ * @return PROMPT_OK on success
+ * @return PROMPT_EOF if stdin ended or the read failed
+ * @return PROMPT_TIMEOUT if the idle limit expired
+ */
+static int promptLine(char dest[SIZE_128], const char* prompt, int hidden)
+{
+	dest[0] = '\0';
+	printf("%s", prompt);
+	// Prompts carry no trailing newline, so flush before blocking.
+	fflush(stdout);
+
+	// Echo has to be off before the user types, not after the wait
+	// returns: the terminal echoes each keystroke as it is entered, and
+	// in canonical mode poll only reports the line once Enter is hit. So
+	// waiting first would put the whole secret on screen.
+	if (hidden)
+		disable_echo();
+
+	int ready = waitForInput(SESSION_TIMEOUT_SECONDS);
+	char* got = (ready > 0) ? fgets(dest, SIZE_128, stdin) : NULL;
+
+	if (hidden)
+	{
+		enable_echo();
+		printf("\n");
+	}
+
+	if (ready == 0)
+	{
+		dest[0] = '\0';
+		return PROMPT_TIMEOUT;
+	}
+	if (got == NULL)
+	{
+		dest[0] = '\0';
+		return PROMPT_EOF;
+	}
+
+	dest[strcspn(dest, "\n")] = '\0';
+	return PROMPT_OK;
 }
 
 /*
