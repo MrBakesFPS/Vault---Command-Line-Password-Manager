@@ -203,8 +203,7 @@ static VaultStatus loadVault(const VaultSession* session, VaultHeader* header, s
 	}
 	else
 	{
-		*itemCount = parse(cipher, cipLen, vaultItems, VAULT_MAX_ITEMS);
-		status = VAULT_OK;
+		status = parse(cipher, cipLen, vaultItems, VAULT_MAX_ITEMS, itemCount);
 	}
 
 	explicit_bzero(cipher, cipLen);
@@ -592,50 +591,54 @@ cleanup:
 }
 //======================================================================
 
-size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size_t maxItems)
+VaultStatus parse(const uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size_t maxItems, size_t* itemCount)
 {
 	size_t txtIndex = 0;
-	size_t wordIndex = 0;
-	size_t itemIndex = 0;
+	size_t items = 0;
 
-	while (txtIndex < cipLen && itemIndex < maxItems)
+	while (txtIndex < cipLen)
 	{
-		while (txtIndex < cipLen && cipher[txtIndex] != '\t')
-		{
-			if (wordIndex < 127)
-				vaultItems[itemIndex].site[wordIndex] = cipher[txtIndex];
-			wordIndex++;
-			txtIndex++;
-		}
-		vaultItems[itemIndex].site[wordIndex < 127 ? wordIndex : 127] = '\0';
-		wordIndex = 0;
-		txtIndex++;
+		// More records than the caller can hold. Carrying on would drop
+		// the remainder, and the next save would write the truncation
+		// back over the file.
+		if (items >= maxItems)
+			return VAULT_ERR_CORRUPT;
 
-		while (txtIndex < cipLen && cipher[txtIndex] != '\t')
-		{
-			if (wordIndex < 127)
-				vaultItems[itemIndex].user[wordIndex] = cipher[txtIndex];
-			wordIndex++;
-			txtIndex++;
-		}
-		vaultItems[itemIndex].user[wordIndex < 127 ? wordIndex : 127] = '\0';
-		wordIndex = 0;
-		txtIndex++;
+		char* field[3] = { vaultItems[items].site, vaultItems[items].user, vaultItems[items].pass };
+		const uint8_t endsAt[3] = { '\t', '\t', '\n' };
 
-		while (txtIndex < cipLen && cipher[txtIndex] != '\n')
+		for (size_t f = 0; f < 3; f++)
 		{
-			if (wordIndex < 127)
-				vaultItems[itemIndex].pass[wordIndex] = cipher[txtIndex];
-			wordIndex++;
+			size_t len = 0;
+			while (txtIndex < cipLen && cipher[txtIndex] != endsAt[f])
+			{
+				// A newline before the password field means the record
+				// ended early; writers reject newlines in site and user.
+				if (f < 2 && cipher[txtIndex] == '\n')
+					return VAULT_ERR_CORRUPT;
+
+				// Longer than a VaultItems field. The old code truncated
+				// here, quietly corrupting the entry.
+				if (len >= SIZE_128 - 1)
+					return VAULT_ERR_CORRUPT;
+
+				field[f][len] = (char)cipher[txtIndex];
+				len++;
+				txtIndex++;
+			}
+
+			// Ran out of data before the field terminator.
+			if (txtIndex >= cipLen)
+				return VAULT_ERR_CORRUPT;
+
+			field[f][len] = '\0';
 			txtIndex++;
 		}
-		vaultItems[itemIndex].pass[wordIndex < 127 ? wordIndex : 127] = '\0';
-		wordIndex = 0;
-		txtIndex++;
-		itemIndex++;
+		items++;
 	}
 
-	return itemIndex;
+	*itemCount = items;
+	return VAULT_OK;
 }
 
 //======================================================================

@@ -21,6 +21,7 @@ typedef enum {
     VAULT_ERR_FIELD_CHAR = -6,
     VAULT_ERR_IO = -7,
     VAULT_ERR_INTERNAL = -8,
+    VAULT_ERR_CORRUPT = -9,
 } VaultStatus;
 
 // Most entries a vault can hold. addEntry refuses to go past this with
@@ -184,16 +185,25 @@ VaultStatus list(const VaultSession* session);
 VaultStatus get(const char* site, const VaultSession* session);
 
 /*
-* Turns a vault of text into a list of vault items
+* Turns a vault of text into a list of vault items.
+*
+* Every record must be exactly site TAB user TAB pass NEWLINE, and the
+* data must end on a record boundary. Anything else is reported rather
+* than being silently repaired, so an empty vault (which is valid, and
+* yields a count of 0) stays distinguishable from a damaged one.
 *
 * @param cipher - The text being read from
 * @param cipLen - The text length
 * @param vaultItems - The list of vault items being created
 * @param maxItems - the max amount of items allowed in the list
+* @param itemCount - Set to the number of entries parsed, on VAULT_OK
 *
-* @return - The size of the vault
+* @return VAULT_ERR_CORRUPT if a record is truncated, a field is too
+*         long for a VaultItems field, or there are more records than
+*         maxItems
+* @return VAULT_OK
 */
-size_t parse(uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size_t maxItems);
+VaultStatus parse(const uint8_t* cipher, size_t cipLen, struct VaultItems* vaultItems, size_t maxItems, size_t* itemCount);
 
 /*
 * Turns an array of vault items into a uint8_t array for encrypting

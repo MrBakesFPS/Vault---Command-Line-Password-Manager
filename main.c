@@ -548,6 +548,7 @@ static void reportError(int rc)
 		case VAULT_ERR_FIELD_LEN:  printf("Field too long (max 127 bytes).\n"); break;
 		case VAULT_ERR_FIELD_CHAR: printf("Fields can't contain tabs or newlines.\n"); break;
 		case VAULT_ERR_IO:         printf("Storage error accessing the vault file.\n"); break;
+		case VAULT_ERR_CORRUPT:    printf("Vault contents are malformed — the file decrypted but its layout is not valid.\n"); break;
 		default:                   printf("Unexpected internal error.\n"); break;
 	}
 }

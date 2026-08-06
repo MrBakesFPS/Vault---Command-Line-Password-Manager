@@ -72,6 +72,14 @@ delimited. Magic + version are the GCM additional authenticated data.
 See `writeVault`/`readVault`/`parse`/`serializeEntries` in vault.h for
 the exact contract.
 
+`parse` validates structure rather than repairing it: every record must
+be exactly site TAB user TAB pass NEWLINE, fields must fit a
+`VaultItems` field, and the data must end on a record boundary.
+Anything else is `VAULT_ERR_CORRUPT`, so an empty vault (valid, count 0)
+stays distinguishable from a damaged one. GCM authenticates before
+`parse` runs, so this catches format drift and internal bugs, not
+tampering.
+
 Writes go to a `.temp` sibling first: every `fwrite` is checked and
 fsynced before `commitVault` renames it into place, so a failed write
 leaves the existing vault untouched rather than truncating it. Don't
