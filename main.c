@@ -19,7 +19,7 @@
 void printUsage();
 void loginVault(const VaultSession* session);
 int verifyUsername(char username[SIZE_128]);
-int verifyPassword(char password[SIZE_128], const char* printText);
+int readSecret(char secret[SIZE_128], const char* printText);
 void disable_echo();
 void enable_echo();
 static void reportError(int rc);
@@ -49,7 +49,7 @@ int main(int argc, char*argv[])
 				status = -1;
 				goto cleanup;
 			}
-			if (verifyPassword(password, "Password: ") == -1)
+			if (readSecret(password, "Password: ") == -1)
 			{
 				status = -1;
 				goto cleanup;
@@ -76,12 +76,12 @@ int main(int argc, char*argv[])
 				status = -1;
 				goto cleanup;
 			}
-			if (verifyPassword(password, "Password: ") == -1)
+			if (readSecret(password, "Password: ") == -1)
 			{
 				status = -1;
 				goto cleanup;
 			}
-			if (verifyPassword(confirmPass, "Confirm Password: ") == -1)
+			if (readSecret(confirmPass, "Confirm Password: ") == -1)
 			{
 				status = -1;
 				goto cleanup;
@@ -110,12 +110,12 @@ int main(int argc, char*argv[])
 				status = -1;
 				goto cleanup;
 			}
-			if (verifyPassword(password, "Password: ") == -1)
+			if (readSecret(password, "Password: ") == -1)
 			{
 				status = -1;
 				goto cleanup;
 			}
-			if (verifyPassword(confirmPass, "Confirm Password: ") == -1)
+			if (readSecret(confirmPass, "Confirm Password: ") == -1)
 			{
 				status = -1;
 				goto cleanup;
@@ -363,23 +363,26 @@ int verifyUsername(char username[SIZE_128])
 }
 
 /*
- * Retrieves a hidden password
+ * Reads one line from stdin with terminal echo off. This only collects
+ * the input; nothing is checked against the vault here. openSession is
+ * what actually verifies a master password.
  *
- * @param password - The password being entered
- * @param printText - The text being printed for password prompt
+ * @param secret - Buffer receiving the entered text
+ * @param printText - The text being printed for the prompt
  *
- * @return -1 if failed to get password
+ * @return -1 if the read failed (EOF or closed stdin), not if the
+ *         entered value was wrong - this function has no way to know
  * @return 0 on success
  */
-int verifyPassword(char password[SIZE_128], const char* printText)
+int readSecret(char secret[SIZE_128], const char* printText)
 {
 	printf("%s", printText);
-	password[0] = '\0';
+	secret[0] = '\0';
 	disable_echo();
-	if (fgets(password, SIZE_128, stdin) != NULL)
+	if (fgets(secret, SIZE_128, stdin) != NULL)
 	{
 		enable_echo();
-		password[strcspn(password, "\n")] = '\0';
+		secret[strcspn(secret, "\n")] = '\0';
 		printf("\n");
 		return 0;
 	}

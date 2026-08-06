@@ -97,5 +97,6 @@ add a write path that skips this.
   secret, so every decision uses a 0 / all-ones mask rather than an
   `if`. Keep it that way, and re-check the disassembly for
   data-dependent jumps if you touch it.
-- Known rough edges, not yet addressed: `verifyPassword` in `main.c`
-  only reads a hidden line and verifies nothing, despite the name.
+- `readSecret` in `main.c` only collects input with echo off; it
+  verifies nothing. A master password is proven correct by
+  `openSession`, and nowhere else.
