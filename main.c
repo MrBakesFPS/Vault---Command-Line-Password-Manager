@@ -251,7 +251,8 @@ void loginVault(const VaultSession* session)
 				break;
 			}
 
-			int rc = addEntry(site, user, pass, session);
+			size_t count = 0;
+			int rc = addEntry(site, user, pass, session, &count);
 			explicit_bzero(pass, sizeof pass);
 			if (rc != VAULT_OK)
 			{
@@ -259,7 +260,13 @@ void loginVault(const VaultSession* session)
 				printf("\n");
 				continue;
 			}
-			printf("Password added to vault successfully!\n\n");
+			printf("Password added to vault successfully!\n");
+			if (count >= VAULT_MAX_ITEMS)
+				printf("The vault is now full — remove an entry before adding another.\n");
+			else if (count >= VAULT_WARN_ITEMS)
+				printf("Warning: %zu of %d entries used, only %d left.\n",
+					count, VAULT_MAX_ITEMS, (int)(VAULT_MAX_ITEMS - count));
+			printf("\n");
 		}
 		else if (strcmp(userInput, "remove") == 0)
 		{
@@ -537,7 +544,7 @@ static void reportError(int rc)
 		case VAULT_ERR_NOT_FOUND:  printf("No vault found — run 'init' first.\n"); break;
 		case VAULT_ERR_AUTH:       printf("Wrong master password or corrupted vault.\n"); break;
 		case VAULT_ERR_ITEM:       printf("Item not found.\n"); break;
-		case VAULT_ERR_FULL:       printf("Vault is full.\n"); break;
+		case VAULT_ERR_FULL:       printf("Vault is full (%d entries max) — remove one first.\n", VAULT_MAX_ITEMS); break;
 		case VAULT_ERR_FIELD_LEN:  printf("Field too long (max 127 bytes).\n"); break;
 		case VAULT_ERR_FIELD_CHAR: printf("Fields can't contain tabs or newlines.\n"); break;
 		case VAULT_ERR_IO:         printf("Storage error accessing the vault file.\n"); break;

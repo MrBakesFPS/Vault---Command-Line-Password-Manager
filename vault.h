@@ -23,6 +23,14 @@ typedef enum {
     VAULT_ERR_INTERNAL = -8,
 } VaultStatus;
 
+// Most entries a vault can hold. addEntry refuses to go past this with
+// VAULT_ERR_FULL.
+#define VAULT_MAX_ITEMS 256
+
+// Entry count at which callers should start warning the user that the
+// vault is filling up (90% of capacity).
+#define VAULT_WARN_ITEMS ((VAULT_MAX_ITEMS * 9) / 10)
+
 /*
 * A structure of vault data containing site, user and password data
 */
@@ -136,6 +144,9 @@ VaultStatus removeEntry(const char* site, const char* user, const VaultSession* 
 * @param user - The user being added to the entry
 * @param pass - The password being added to the entry
 * @param session - The unlocked session holding the vault key
+* @param countOut - Set to the entry count after the add, so callers can
+*                   warn as the vault approaches VAULT_MAX_ITEMS. Only
+*                   written on VAULT_OK. May be NULL.
 *
 * @return VAULT_ERR_FIELD_CHAR
 * @return VAULT_ERR_FIELD_LEN
@@ -146,7 +157,7 @@ VaultStatus removeEntry(const char* site, const char* user, const VaultSession* 
 * @return VAULT_ERR_IO
 * @return VAULT_OK
 */
-VaultStatus addEntry(const char* site, const char* user, const char* pass, const VaultSession* session);
+VaultStatus addEntry(const char* site, const char* user, const char* pass, const VaultSession* session, size_t* countOut);
 
 /*
 * Prints the sites and usernames of all items in the vault

@@ -174,7 +174,7 @@ static VaultStatus validateField(const char* field)
 *
 * @param session - The unlocked session holding the vault key
 * @param header - The header read back off disk
-* @param vaultItems - A SIZE_256 array being filled
+* @param vaultItems - A VAULT_MAX_ITEMS array being filled
 * @param itemCount - The number of entries parsed
 *
 * @return VAULT_ERR_NOT_FOUND
@@ -203,7 +203,7 @@ static VaultStatus loadVault(const VaultSession* session, VaultHeader* header, s
 	}
 	else
 	{
-		*itemCount = parse(cipher, cipLen, vaultItems, SIZE_256);
+		*itemCount = parse(cipher, cipLen, vaultItems, VAULT_MAX_ITEMS);
 		status = VAULT_OK;
 	}
 
@@ -401,7 +401,7 @@ VaultStatus replaceEntry(const char* site, const char* user, const char* newPass
 	if (status != VAULT_OK)
 		return status;
 
-	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+	vaultItems = malloc(VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
 		return VAULT_ERR_INTERNAL;
 
@@ -421,7 +421,7 @@ VaultStatus replaceEntry(const char* site, const char* user, const char* newPass
 	}
 
 cleanup:
-	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	explicit_bzero(vaultItems, VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	free(vaultItems);
 	return status;
 }
@@ -434,7 +434,7 @@ VaultStatus removeEntry(const char* site, const char* user, const VaultSession* 
 	size_t vaultSize = 0;
 	VaultStatus status;
 
-	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+	vaultItems = malloc(VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
 		return VAULT_ERR_INTERNAL;
 
@@ -458,13 +458,13 @@ VaultStatus removeEntry(const char* site, const char* user, const VaultSession* 
 	}
 
 cleanup:
-	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	explicit_bzero(vaultItems, VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	free(vaultItems);
 	return status;
 }
 //======================================================================
 
-VaultStatus addEntry(const char* site, const char* user, const char* pass, const VaultSession* session)
+VaultStatus addEntry(const char* site, const char* user, const char* pass, const VaultSession* session, size_t* countOut)
 {
 	VaultHeader header;
 	struct VaultItems* vaultItems = NULL;
@@ -481,7 +481,7 @@ VaultStatus addEntry(const char* site, const char* user, const char* pass, const
 	if (status != VAULT_OK)
 		return status;
 
-	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+	vaultItems = malloc(VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
 		return VAULT_ERR_INTERNAL;
 
@@ -489,7 +489,7 @@ VaultStatus addEntry(const char* site, const char* user, const char* pass, const
 	if (status != VAULT_OK)
 		goto cleanup;
 
-	if (vaultSize >= SIZE_256)
+	if (vaultSize >= VAULT_MAX_ITEMS)
 	{
 		status = VAULT_ERR_FULL;
 		goto cleanup;
@@ -511,9 +511,11 @@ VaultStatus addEntry(const char* site, const char* user, const char* pass, const
 	qsort(vaultItems, vaultSize, sizeof(struct VaultItems), compareEntries);
 
 	status = saveVault(session, &header, vaultItems, vaultSize);
+	if (status == VAULT_OK && countOut != NULL)
+		*countOut = vaultSize;
 
 cleanup:
-	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	explicit_bzero(vaultItems, VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	free(vaultItems);
 	return status;
 }
@@ -526,7 +528,7 @@ VaultStatus list(const VaultSession* session)
 	size_t vaultSize = 0;
 	VaultStatus status;
 
-	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+	vaultItems = malloc(VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
 		return VAULT_ERR_INTERNAL;
 
@@ -540,11 +542,16 @@ VaultStatus list(const VaultSession* session)
 	{
 		printf("%-15s\t%-15s\t%-15s\n", vaultItems[x].site, vaultItems[x].user, "********");
 	}
+	printf("\n%zu of %d entries used.\n", vaultSize, VAULT_MAX_ITEMS);
+	if (vaultSize >= VAULT_MAX_ITEMS)
+		printf("The vault is full — remove an entry before adding another.\n");
+	else if (vaultSize >= VAULT_WARN_ITEMS)
+		printf("Warning: only %d left before the vault is full.\n", (int)(VAULT_MAX_ITEMS - vaultSize));
 	printf("\n");
 	status = VAULT_OK;
 
 cleanup:
-	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	explicit_bzero(vaultItems, VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	free(vaultItems);
 	return status;
 }
@@ -558,7 +565,7 @@ VaultStatus get(const char* site, const VaultSession* session)
 	int found = 0;
 	VaultStatus status;
 
-	vaultItems = malloc(SIZE_256 * sizeof(struct VaultItems));
+	vaultItems = malloc(VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	if (vaultItems == NULL)
 		return VAULT_ERR_INTERNAL;
 
@@ -579,7 +586,7 @@ VaultStatus get(const char* site, const VaultSession* session)
 	status = found ? VAULT_OK : VAULT_ERR_ITEM;
 
 cleanup:
-	explicit_bzero(vaultItems, SIZE_256 * sizeof(struct VaultItems));
+	explicit_bzero(vaultItems, VAULT_MAX_ITEMS * sizeof(struct VaultItems));
 	free(vaultItems);
 	return status;
 }

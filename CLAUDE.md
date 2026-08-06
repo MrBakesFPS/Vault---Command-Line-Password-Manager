@@ -44,6 +44,11 @@ All vault I/O funnels through two private helpers in `vault.c`:
 - `loadVault` — read, authenticate, decrypt, parse into `VaultItems`
 - `saveVault` — serialize, fresh nonce, encrypt, write, commit
 
+Capacity is `VAULT_MAX_ITEMS` (256). `addEntry` reports the resulting
+count through `countOut` so callers can warn from `VAULT_WARN_ITEMS`
+(90%) onward; `list` prints the same tally. Use those constants rather
+than the generic `SIZE_256`, which no longer appears in `vault.c`.
+
 **New vault operations should go through these two.** They exist
 because the read/derive/decrypt preamble was previously copy-pasted
 across seven functions, which is how `closeVault` came to report a
