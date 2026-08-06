@@ -52,6 +52,7 @@ VaultStatus confirmPassword(const char* masterPass, const char* username);
 * @param username - The username for finding the vault
 *
 * @return VAULT_ERR_INTERNAL
+* @return VAULT_ERR_AUTH
 * @return VAULT_ERR_IO
 * @return VAULT_OK
 */

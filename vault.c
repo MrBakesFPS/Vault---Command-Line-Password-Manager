@@ -7,6 +7,9 @@
 @Description:	This is the vault implementation file
 ===================================================================== */
 
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "aes.h"
 #include "passHash.h"
 #include "vault.h"
@@ -21,6 +24,72 @@ static int compareEntries(const void* a, const void* b)
 	if (bySite != 0)
 		return bySite;
 	return strcmp(ia->user, ib->user);
+}
+//======================================================================
+
+/*
+* Creates ~/.config and ~/.config/vault if they don't already exist.
+* Both are made private (0700); an existing directory is left as-is.
+*
+* @return VAULT_ERR_IO
+* @return VAULT_OK
+*/
+static VaultStatus ensureVaultDir(void)
+{
+	const char* home = getenv("HOME");
+	if (home == NULL)
+		return VAULT_ERR_IO;
+
+	char dir[512];
+	if ((size_t)snprintf(dir, sizeof dir, "%s/.config", home) >= sizeof dir)
+		return VAULT_ERR_IO;
+	if (mkdir(dir, 0700) != 0 && errno != EEXIST)
+		return VAULT_ERR_IO;
+
+	if ((size_t)snprintf(dir, sizeof dir, "%s/.config/vault", home) >= sizeof dir)
+		return VAULT_ERR_IO;
+	if (mkdir(dir, 0700) != 0 && errno != EEXIST)
+		return VAULT_ERR_IO;
+
+	return VAULT_OK;
+}
+//======================================================================
+
+/*
+* Atomically moves a fully-written temp vault over the real one, then
+* syncs the directory so the rename itself survives a crash. The temp
+* file is removed if the rename fails.
+*
+* @param tempPath - The temp file holding the new vault
+* @param path - The vault file being replaced
+*
+* @return VAULT_ERR_IO
+* @return VAULT_OK
+*/
+static VaultStatus commitVault(const char* tempPath, const char* path)
+{
+	if (rename(tempPath, path) != 0)
+	{
+		remove(tempPath);
+		return VAULT_ERR_IO;
+	}
+
+	char dir[512];
+	if ((size_t)snprintf(dir, sizeof dir, "%s", path) >= sizeof dir)
+		return VAULT_OK;
+
+	char* slash = strrchr(dir, '/');
+	if (slash != NULL)
+	{
+		*slash = '\0';
+		int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+		if (dfd >= 0)
+		{
+			fsync(dfd);
+			close(dfd);
+		}
+	}
+	return VAULT_OK;
 }
 //======================================================================
 
@@ -118,7 +187,7 @@ VaultStatus closeVault(const char* masterPass, const char* username)
 
 	if (gcmDecrypt(key, nonce, cipher, cipLen, aad, 6, tag) != VAULT_OK)
 	{
-		status = VAULT_ERR_INTERNAL;
+		status = VAULT_ERR_AUTH;
 		goto cleanup;
 	}
 
@@ -170,6 +239,14 @@ VaultStatus initVault(const char* masterPass, const char* username)
 	for (size_t x = 0; x < 2; x++)
 		aad[x + 4] = version[x];
 
+	// Do this before the (slow) key derivation so an unusable config
+	// directory fails immediately rather than after 600k iterations.
+	if (ensureVaultDir() != VAULT_OK)
+	{
+		status = VAULT_ERR_IO;
+		goto cleanup;
+	}
+
 	if (randomBytes(salt, 16) != VAULT_OK)
 	{
 		status = VAULT_ERR_IO;
@@ -208,16 +285,12 @@ VaultStatus initVault(const char* masterPass, const char* username)
 		goto cleanup;
 	}
 
-	int wrote = writeVault(magic, version, salt, nonce, tag, buffer, bufLen, tempPath);
-	if (wrote == 0)
+	if (writeVault(magic, version, salt, nonce, tag, buffer, bufLen, tempPath) != VAULT_OK)
 	{
-		if (rename(tempPath, path) != 0)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
+		status = VAULT_ERR_IO;
+		goto cleanup;
 	}
-	status = (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
+	status = commitVault(tempPath, path);
 
 cleanup:
 	if (buffer)
@@ -321,16 +394,12 @@ VaultStatus replaceEntry(const char* site, const char* user, const char* newPass
 			goto cleanup;
 		}
 
-		int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
-		if (wrote == 0)
+		if (writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath) != VAULT_OK)
 		{
-			if (rename(tempPath, path) != 0)
-			{
-				status = VAULT_ERR_IO;
-				goto cleanup;
-			}
+			status = VAULT_ERR_IO;
+			goto cleanup;
 		}
-		status = (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
+		status = commitVault(tempPath, path);
 	}
 	else
 	{
@@ -452,16 +521,12 @@ VaultStatus removeEntry(const char* site, const char* user, const char* masterPa
 			goto cleanup;
 		}
 
-		int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
-		if (wrote == 0)
+		if (writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath) != VAULT_OK)
 		{
-			if (rename(tempPath, path) != 0)
-			{
-				status = VAULT_ERR_IO;
-				goto cleanup;
-			}
+			status = VAULT_ERR_IO;
+			goto cleanup;
 		}
-		status = (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
+		status = commitVault(tempPath, path);
 	}
 	else
 	{
@@ -612,16 +677,12 @@ VaultStatus addEntry(const char* site, const char* user, const char* pass, const
 		goto cleanup;
 	}
 
-	int wrote = writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath);
-	if (wrote == 0)
+	if (writeVault(magic, version, salt, nonce, tag, blob, newLen, tempPath) != VAULT_OK)
 	{
-		if (rename(tempPath, path) != 0)
-		{
-			status = VAULT_ERR_IO;
-			goto cleanup;
-		}
+		status = VAULT_ERR_IO;
+		goto cleanup;
 	}
-	status = (wrote == 0) ? VAULT_OK : VAULT_ERR_IO;
+	status = commitVault(tempPath, path);
 
 cleanup:
 	if (cipher)
@@ -910,22 +971,47 @@ uint8_t* serializeEntries(struct VaultItems* vaultItems, size_t itemCount, size_
 //======================================================================
 VaultStatus writeVault(uint8_t magic[4], uint8_t version[2], uint8_t salt[16], uint8_t nonce[12], uint8_t tag[16], uint8_t* cipher, size_t cipLen, char* fileName)
 {
-	FILE* file = fopen(fileName, "wb");
+	// 0600 at creation time: never let the vault exist world-readable,
+	// not even for the moment between fopen and a later chmod.
+	int fd = open(fileName, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0)
+		return VAULT_ERR_IO;
+
+	FILE* file = fdopen(fd, "wb");
 	if (file == NULL)
 	{
-		printf("Error opening file...\n");
+		close(fd);
+		remove(fileName);
 		return VAULT_ERR_IO;
 	}
-	else
+
+	if (fwrite(magic, sizeof(uint8_t), 4, file) != 4
+		|| fwrite(version, sizeof(uint8_t), 2, file) != 2
+		|| fwrite(salt, sizeof(uint8_t), 16, file) != 16
+		|| fwrite(nonce, sizeof(uint8_t), 12, file) != 12
+		|| fwrite(tag, sizeof(uint8_t), 16, file) != 16
+		|| fwrite(cipher, sizeof(uint8_t), cipLen, file) != cipLen)
 	{
-		fwrite(magic, sizeof(uint8_t), 4, file);
-		fwrite(version, sizeof(uint8_t), 2, file);
-		fwrite(salt, sizeof(uint8_t), 16, file);
-		fwrite(nonce, sizeof(uint8_t), 12, file);
-		fwrite(tag, sizeof(uint8_t), 16, file);
-		fwrite(cipher, sizeof(uint8_t), cipLen, file);
+		fclose(file);
+		remove(fileName);
+		return VAULT_ERR_IO;
 	}
-	fclose(file);
+
+	// Force the bytes to disk before the caller renames this over the
+	// live vault, so a crash can't promote a truncated file.
+	if (fflush(file) != 0 || fsync(fileno(file)) != 0)
+	{
+		fclose(file);
+		remove(fileName);
+		return VAULT_ERR_IO;
+	}
+
+	if (fclose(file) != 0)
+	{
+		remove(fileName);
+		return VAULT_ERR_IO;
+	}
+
 	return VAULT_OK;
 }
 

@@ -33,7 +33,11 @@ uint8_t* pbkdf2(uint8_t* password, size_t passLen, uint8_t* salt, size_t saltLen
 
     uint8_t* finalHash = malloc(SIZE_32);
 	if (finalHash == NULL)
+	{
+		explicit_bzero(hash, SIZE_32);
+		free(hash);
 		return NULL;
+	}
 
     for (size_t i = 0; i < SIZE_32; i++)
 		finalHash[i] = hash[i];
@@ -41,14 +45,20 @@ uint8_t* pbkdf2(uint8_t* password, size_t passLen, uint8_t* salt, size_t saltLen
     for (size_t j = 1; j < iterations; j++)
     {
         uint8_t* next = hmac(password, passLen, hash, SIZE_32);
+        explicit_bzero(hash, SIZE_32);
         free(hash);
 		if (next == NULL)
+		{
+			explicit_bzero(finalHash, SIZE_32);
+			free(finalHash);
 			return NULL;
+		}
 
 		hash = next;
         for (size_t i = 0; i < SIZE_32; i++)
 			finalHash[i] ^= hash[i];
     }
+    explicit_bzero(hash, SIZE_32);
     free(hash);
 
     return finalHash;
@@ -57,23 +67,26 @@ uint8_t* pbkdf2(uint8_t* password, size_t passLen, uint8_t* salt, size_t saltLen
 //======================================================================
 uint8_t* hmac(uint8_t* key, size_t keyLen, uint8_t* message, size_t msgLength)
 {
-	uint8_t* normalized = normalizeK(key, keyLen);
-	if (normalized == NULL)
-		return NULL;
+	uint8_t* normalized = NULL;
+	uint8_t* inPad = NULL;
+	uint8_t* outPad = NULL;
+	uint8_t* innerBuf = NULL;
+	uint8_t* innerRes = NULL;
+	uint8_t* outerBuf = NULL;
+	uint8_t* result = NULL;
+	size_t innerLen = SIZE_64 + msgLength;
 
-	uint8_t* inPad = malloc(SIZE_64);
+	normalized = normalizeK(key, keyLen);
+	if (normalized == NULL)
+		goto cleanup;
+
+	inPad = malloc(SIZE_64);
 	if (inPad == NULL)
-	{
-		free(normalized);
-		return NULL;
-	}
-	uint8_t* outPad = malloc(SIZE_64);
+		goto cleanup;
+
+	outPad = malloc(SIZE_64);
 	if (outPad == NULL)
-	{
-		free(normalized);
-		free(inPad);
-		return NULL;
-	}
+		goto cleanup;
 
 	for (size_t x = 0; x < SIZE_64; x++)
 	{
@@ -81,15 +94,9 @@ uint8_t* hmac(uint8_t* key, size_t keyLen, uint8_t* message, size_t msgLength)
 		outPad[x] = normalized[x] ^ 0x5c;
 	}
 
-	size_t innerLen = SIZE_64 + msgLength;
-	uint8_t* innerBuf = malloc(innerLen);
+	innerBuf = malloc(innerLen);
 	if (innerBuf == NULL)
-	{
-		free(normalized);
-		free(inPad);
-		free(outPad);
-		return NULL;
-	}
+		goto cleanup;
 
 	for (size_t x = 0; x < SIZE_64; x++)
 	{
@@ -100,26 +107,13 @@ uint8_t* hmac(uint8_t* key, size_t keyLen, uint8_t* message, size_t msgLength)
 		innerBuf[SIZE_64 + x] = message[x];
 	}
 
-	uint8_t* innerRes = sha256(innerBuf, innerLen);
+	innerRes = sha256(innerBuf, innerLen);
 	if (innerRes == NULL)
-	{
-		free(normalized);
-		free(inPad);
-		free(outPad);
-		free(innerBuf);
-		return NULL;
-	}
+		goto cleanup;
 
-	uint8_t* outerBuf = malloc(SIZE_64 + SIZE_32);
+	outerBuf = malloc(SIZE_64 + SIZE_32);
 	if (outerBuf == NULL)
-	{
-		free(normalized);
-		free(inPad);
-		free(outPad);
-		free(innerBuf);
-		free(innerRes);
-		return NULL;
-	}
+		goto cleanup;
 
 	for (size_t x = 0; x < SIZE_64; x++)
 	{
@@ -130,13 +124,41 @@ uint8_t* hmac(uint8_t* key, size_t keyLen, uint8_t* message, size_t msgLength)
 		outerBuf[SIZE_64 + x] = innerRes[x];
 	}
 
-	uint8_t* result = sha256(outerBuf, SIZE_64 + SIZE_32);
-	free(normalized);
-	free(inPad);
-	free(outPad);
-	free(innerBuf);
-	free(innerRes);
-	free(outerBuf);
+	result = sha256(outerBuf, SIZE_64 + SIZE_32);
+
+cleanup:
+	// Every buffer here is derived from the master password. Wipe each
+	// one before handing the memory back to the allocator.
+	if (normalized)
+	{
+		explicit_bzero(normalized, SIZE_64);
+		free(normalized);
+	}
+	if (inPad)
+	{
+		explicit_bzero(inPad, SIZE_64);
+		free(inPad);
+	}
+	if (outPad)
+	{
+		explicit_bzero(outPad, SIZE_64);
+		free(outPad);
+	}
+	if (innerBuf)
+	{
+		explicit_bzero(innerBuf, innerLen);
+		free(innerBuf);
+	}
+	if (innerRes)
+	{
+		explicit_bzero(innerRes, SIZE_32);
+		free(innerRes);
+	}
+	if (outerBuf)
+	{
+		explicit_bzero(outerBuf, SIZE_64 + SIZE_32);
+		free(outerBuf);
+	}
 	return result;
 }
 //======================================================================
@@ -214,6 +236,7 @@ uint8_t* sha256(uint8_t* message, size_t msgLength)
 	uint8_t* out = malloc(SIZE_32);
 	if (out == NULL)
 	{
+		explicit_bzero(padded, blockCount * 64);
 		free(padded);
 		return NULL;
 	}
@@ -224,6 +247,8 @@ uint8_t* sha256(uint8_t* message, size_t msgLength)
 		out[i * 4 + 2] = (state[i] >> 8) & 0xff;
 		out[i * 4 + 3] = state[i] & 0xff;
 	}
+	// Holds the ipad-prefixed message when called from hmac()
+	explicit_bzero(padded, blockCount * 64);
 	free(padded);
 	return out;
 }

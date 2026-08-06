@@ -245,6 +245,7 @@ void loginVault(char username[SIZE_128])
 			printf("\n");
 			if (verifyPassword(password, "Master Password: ") == -1)
 			{
+				explicit_bzero(password, sizeof password);
 				printf("Wrong password!\n\n");
 				continue;
 			}
@@ -328,10 +329,13 @@ void loginVault(char username[SIZE_128])
 			printf("\n\n");
 			if (verifyPassword(password, "Master Password: ") == -1)
 			{
+				explicit_bzero(newPass, sizeof newPass);
+				explicit_bzero(password, sizeof password);
 				printf("Wrong password!\n\n");
 				continue;
 			}
 			int rc = replaceEntry(site, user, newPass, password, username);
+			explicit_bzero(newPass, sizeof newPass);
 			explicit_bzero(password, sizeof password);
 			if (rc != VAULT_OK)
 			{
